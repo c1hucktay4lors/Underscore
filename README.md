@@ -2,7 +2,7 @@
 
 **Audio-side dialogue ducker for Forza Horizon on Linux.** Underscore turns your
 music down when someone in the game starts talking, then brings it back up when
-they stop — so a co-driver callout or a story beat doesn't get buried under
+they stop — so story dialogue doesn't get buried under
 Spotify, and you don't have to ride the volume knob yourself.
 
 It listens to the game's *audio* to decide when dialogue is happening (Forza's
@@ -57,16 +57,19 @@ builds bundle it automatically.
 
 ## Installation
 
-### Arch / AUR
+### Arch / AUR PKGBUILD
 
-```sh
-# once published:
-paru -S underscore        # or: yay -S underscore
+```bash
+git clone https://github.com/c1hucktay4lors/Underscore.git
+cd Underscore
+makepkg -si
 ```
 
 When prompted for an `onnxruntime` provider, choose **`python-onnxruntime-cpu`** —
 the VAD is tiny and runs on CPU, so the CUDA/ROCm builds add multi-GB toolkits
 for no benefit.
+
+This method will install both the CLI and GUI tools in a `src ` folder within the cloned repo (fix this with more info please)
 
 ### Manual (virtualenv)
 
@@ -84,7 +87,7 @@ pip install onnxruntime numpy jeepney PySide6-Essentials
 python underscore.py --version
 ```
 
-## First-time setup
+## First-time CLI setup
 
 **1. Find your player name**
 
@@ -199,12 +202,10 @@ playerctl).
 
 ## Credits
 
-Created by **c1hucktay4lors**, developed in close collaboration with **Claude**
-(Anthropic).
+Created by **c1hucktay4lors**, with help from **Claude**.
 
 Speech detection uses the [Silero VAD](https://github.com/snakers4/silero-vad)
-model (MIT). This is an independent Linux project and is not affiliated with the
-Windows application "Segue".
+model (MIT).
 
 ## License
 
