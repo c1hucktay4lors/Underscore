@@ -47,7 +47,7 @@ pause menu, so a pause can't be told from a menu by telemetry alone — which is
 exactly why the default policy keys off the audio instead.
 
 <p align="center">
-  <img src="docs/Underscore GUI.png">
+  <img src="docs/Underscore GUI.png" alt="Underscore GUI" width="640">
 </p>
 
 ## Requirements
