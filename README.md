@@ -1,3 +1,8 @@
+<p align="center">
+  <img src="docs/underscore.png" alt="Underscore icon" width="128">
+</p>
+
+
 # Underscore
 
 **Audio-side dialogue ducker for Forza Horizon on Linux.** Underscore turns your
@@ -41,6 +46,10 @@ reports the same zeroed packet for the main menu, loading screens, *and* the
 pause menu, so a pause can't be told from a menu by telemetry alone — which is
 exactly why the default policy keys off the audio instead.
 
+<p align="center">
+  <img src="docs/Underscore GUI.png">
+</p>
+
 ## Requirements
 
 - Linux with **PipeWire** (developed on Arch + KDE Plasma; works without
@@ -57,19 +66,21 @@ builds bundle it automatically.
 
 ## Installation
 
-### Arch / AUR PKGBUILD
+Underscore lives on GitHub, but there's no prebuilt binary package yet — you
+clone the repo and install locally with one of the methods below.
+
+### Arch (PKGBUILD)
 
 ```bash
 git clone https://github.com/c1hucktay4lors/Underscore.git
 cd Underscore
-makepkg -si
+makepkg -sic
 ```
 
-When prompted for an `onnxruntime` provider, choose **`python-onnxruntime-cpu`** —
-the VAD is tiny and runs on CPU, so the CUDA/ROCm builds add multi-GB toolkits
-for no benefit.
-
-This method will install both the CLI and GUI tools in a `src ` folder within the cloned repo (fix this with more info please)
+`makepkg -sic` builds Underscore from the bundled `PKGBUILD` and installs
+it system-wide with pacman. When prompted for an `onnxruntime` provider, choose
+**`python-onnxruntime-cpu`** — the VAD is tiny and runs on CPU, so the CUDA/ROCm
+builds pull in multi-GB toolkits for no benefit.
 
 ### Manual (virtualenv)
 
