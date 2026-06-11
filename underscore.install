@@ -1,0 +1,24 @@
+post_install() {
+  cat <<'MSG'
+==> underscore installed.  Quick start:
+
+    1. (Optional, for --menu-policy always/pause) In Forza Horizon enable
+       Data Out:  Settings -> HUD & Gameplay -> Data Out = ON,
+       IP 127.0.0.1, Port 5335.
+    2. Find your music player name:   underscore players
+    3. Find the game audio monitor:   underscore sources
+    4. Run it:
+         underscore run --player spotify --game-monitor <name-from-sources>
+
+    The default --menu-policy 'speech' ducks on detected dialogue and needs
+    no telemetry.  Settings persist to ~/.config/underscore/config.toml.
+    The Silero model ships at /usr/share/underscore/silero_vad.onnx.
+
+    Prefer a window?  Launch "Underscore" from your app menu, or run:
+         underscore-gui
+MSG
+}
+
+post_upgrade() {
+  :
+}

@@ -1,0 +1,95 @@
+# Changelog
+
+All notable changes to Underscore. Versions are pre-1.0 while the project
+stabilises; the patch number bumps with each meaningful change. Numbering starts
+from when the GUI work began (earlier CLI-only history is not versioned here).
+
+## 0.0.13
+- `run` now handles `SIGTERM` (e.g. `systemctl --user stop`) the same way it
+  handles Ctrl-C: it restores the player's volume and stops cleanly, instead of
+  being killed mid-duck and leaving the music turned down.
+- Added project metadata for release: `LICENSE` (MIT), `README.md`, attribution
+  in the GUI About dialog / `--version` / module headers, plus repo hygiene
+  (`.gitignore`) and a `RELEASE.md` checklist.
+
+## 0.0.12
+- **Stabilization pass (no new features).**
+  - D-Bus backend now recovers from a dropped session bus. Previously only the
+    player *name* was re-resolved on error, never the connection, so a bus drop
+    (suspend/resume, D-Bus restart, player crash) would wedge ducking for the
+    rest of the session. It now closes the dead connection and reconnects on the
+    next call.
+  - The engine frees its fader and telemetry threads if capture ends on its own
+    (you quit the game, or the sink disappears) instead of leaking them until
+    Stop. `_cleanup` is now lock-guarded so the loop and an explicit stop can't
+    race, and the capture child is reaped rather than left a zombie.
+
+## 0.0.11
+- **Direct D-Bus MPRIS control.** New `MPRISBackend` talks to the player's
+  volume and transport straight over the session bus via `jeepney` (pure-Python)
+  — no `playerctl` binary and no per-fade subprocess spawns. It's now the `auto`
+  default, with `playerctl` kept as a fallback (`--volume-backend playerctl`).
+  Player discovery also goes through D-Bus first.
+  - Why: removes the process-spawn overhead during fades and drops the hard
+    `playerctl` dependency, which matters on locked-down systems like the Steam
+    Deck where you can't `pacman -S playerctl`.
+  - Packaging: `python-jeepney` replaces `playerctl` in `depends`; `playerctl`
+    is now an optdepend.
+
+## 0.0.10
+- **Persistent virtual sink (the big one).** `setup` / `teardown` now write a
+  PipeWire config drop-in (`~/.config/pipewire/pipewire.conf.d/underscore.conf`)
+  instead of spawning a transient `pw-loopback` process. The `Underscore_Game`
+  sink is recreated automatically at every login and survives reboots.
+- New GUI **Create / Remove Virtual Sink** button, which can restart PipeWire to
+  apply the change immediately.
+- Exposed `create_virtual_sink()` / `remove_virtual_sink()` / `restart_pipewire()`
+  as library functions.
+- Added `--version` and an `__version__` source of truth.
+
+## 0.0.9
+- **Fixed onnx speech detection.** The Silero v5/v6 model needs 64 samples of
+  left-context prepended to each 512-sample frame; without it the detector
+  returned ~0 for everything and never ducked. Now feeds the context correctly —
+  verified speech reads ~1.0 and silence stays near 0.
+
+## 0.0.8
+- Hover tooltips on every setting (help text on controls and their labels).
+- Speech-detection thresholds now display as percentages (confidence), matching
+  Duck Level.
+
+## 0.0.7
+- GUI layout: content is width-capped and centered so maximizing looks
+  intentional; the log pane absorbs extra vertical space (no odd gaps).
+- Capitalized on-screen labels and status text; fixed the "Player & Monitor"
+  group title (ampersand was being eaten as a mnemonic).
+
+## 0.0.6
+- PKGBUILD fetches the Silero model from a pinned upstream release
+  (silero-vad v6.2.1) with a verified `sha256` — no local model file needed for
+  the build.
+
+## 0.0.5
+- Renamed the project to **Underscore** throughout (module, config dir, paths,
+  sink name, CLI program name).
+- PKGBUILD installs the GUI too: added the `pyside6` dependency, a `.desktop`
+  entry, and both `underscore` (CLI) and `underscore-gui` launchers.
+
+## 0.0.4
+- PySide6 GUI (`underscore_gui.py`): start/stop, live speech & music-level
+  meters, all engine settings, player/monitor pickers, and a system-tray icon.
+
+## 0.0.3
+- First Arch packaging: a PKGBUILD that *declares* the system tools
+  (playerctl/pipewire/wireplumber) and bundles the model, plus guidance to pick
+  the `python-onnxruntime-cpu` provider.
+
+## 0.0.2
+- Torch-free speech detection: run Silero VAD through `onnxruntime` instead of
+  PyTorch, cutting the dependency footprint from ~1 GB to ~50 MB.
+
+## 0.0.1
+- Split the monolithic CLI into an importable module: a `Config` dataclass and
+  an `Engine` class with `start()`/`stop()` and a live status callback — the
+  seam the GUI and any automation drive. Settings persist to
+  `~/.config/underscore/config.toml`.

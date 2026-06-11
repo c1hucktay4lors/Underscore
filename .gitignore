@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtualenvs (install.sh target, local envs)
+.venv/
+venv/
+env/
+
+# makepkg / AUR build artifacts
+/pkg/
+/src/
+*.pkg.tar.*
+*.tar.gz
+*.tar.zst
+
+# Editor / OS cruft
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Local runtime scratch
+/tmp/underscore_probe.wav
+
+# NOTE: silero_vad.onnx is intentionally NOT ignored — it ships in the repo so a
+# fresh clone runs without a separate download. (Packaged builds fetch it via the
+# PKGBUILD instead.) The 0.0.x backup zip and other local snapshots are not part
+# of the repo; keep them outside the working tree.
