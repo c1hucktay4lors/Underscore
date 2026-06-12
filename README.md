@@ -161,6 +161,26 @@ underscore run --player spotify
 Run `underscore run --help` for the full set of options (thresholds, fade times,
 ducking levels, telemetry port, etc.). Ctrl-C stops it and restores your volume.
 
+### Suspending ducking on the fly
+---
+
+Sometimes you just want the music at full volume — a favorite track, a quiet
+stretch, a cutscene you'd rather hear scored. Underscore has an override toggle
+that holds the music up and ignores speech until you turn it back off.
+
+- **GUI:** the **Suspend ducking** button, or the tray entry.
+- **Any setup:** `underscore toggle` flips it on a running instance.
+
+For a real "hit a key mid-race" override, bind a keyboard shortcut to that
+command. On KDE: **System Settings → Keyboard → Shortcuts → Add New → Command**,
+set the command to `underscore toggle`, and assign a key. Works with both the
+CLI and the GUI.
+
+> Why a command rather than Underscore grabbing the key itself? On Wayland, apps
+> can't capture global hotkeys by design — the compositor owns them. So the
+> desktop owns the key and `underscore toggle` just signals the running process,
+> which works on both Wayland and X11.
+
 ## Menu policies
 
 `--menu-policy` controls how menus and pauses are handled:
