@@ -100,7 +100,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-__version__ = "0.0.19"
+__version__ = "0.0.20"
 
 SINK_NAME = "underscore_game"
 SAMPLE_RATE = 16000
@@ -112,7 +112,17 @@ OFF_IS_RACE_ON = 0            # int32
 OFF_ENGINE_MAX = 8           # float; 0.0 when no car/session loaded
 MIN_PACKET = 12
 
+# BeamNG OutGauge (media-sync mode): a 96-byte packet on a UDP port. Pausing the
+# sim stops packets entirely; being on-foot / engine-off keeps them flowing but
+# zeroes RPM — so "driving" needs both a recent packet AND RPM above idle-off.
+OUTGAUGE_PORT = 4444
+OUTGAUGE_SIZE = 96
+OUTGAUGE_FORMAT = "<I4sHbbfffffffIIfff16s16si"
+OUTGAUGE_RPM_IDX = 6
+BEAMNG_RPM_MIN = 50.0
+
 GAMEPLAY, MENU, PAUSED, NO_SIGNAL = "GAMEPLAY", "MENU", "PAUSED", "NO_SIGNAL"
+DRIVING, STOPPED = "DRIVING", "STOPPED"
 
 
 # ── Config (shared by CLI and GUI; persisted to ~/.config/underscore/config.toml) ──
@@ -135,6 +145,8 @@ class Config:
     pause_grace: float = 20.0         # 'always' policy pause grace (s)
     port: int = 5335                  # Forza Data Out UDP port
     no_telemetry: bool = False        # disable the state machine
+    game: str = "auto"                # auto | forza | beamng
+    beamng_port: int = 4444           # BeamNG OutGauge UDP port
 
 
 def config_path() -> Path:
@@ -778,6 +790,78 @@ class TelemetryClassifier:
             self.state = self._tracker.update(iro, emax, time.monotonic())
 
 
+class BeamNGTelemetry:
+    """Listens for BeamNG OutGauge packets (96 bytes) on a UDP port. Exposes
+    `driving` — True only when packets are arriving AND RPM is above idle-off —
+    which is the signal media-sync mode uses to play vs. pause the music.
+
+    Pausing the sim stops packets (heartbeat goes silent); on-foot / engine-off
+    keeps packets coming but zeroes RPM; so both checks together mean 'actually
+    driving a running car'."""
+    def __init__(self, port: int = OUTGAUGE_PORT,
+                 timeout: float = 0.3, silence: float = 0.5):
+        self.rpm = 0.0
+        self._last_rx = 0.0
+        self._seen = False
+        self._silence = silence
+        self._port = port
+        self._running = True
+        self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._bound = False
+        try:
+            self._sock.bind(("0.0.0.0", port))
+            self._bound = True
+        except OSError as e:
+            logging.warning("BeamNG listen :%d failed (%s).", port, e)
+        self._sock.settimeout(timeout)
+        self._t = threading.Thread(target=self._loop, daemon=True)
+        self._t.start()
+
+    def _loop(self) -> None:
+        if not self._bound:
+            return
+        while self._running:
+            try:
+                data, _ = self._sock.recvfrom(1024)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            if len(data) == OUTGAUGE_SIZE:
+                self._last_rx = time.monotonic()
+                self._seen = True
+                try:
+                    self.rpm = struct.unpack(OUTGAUGE_FORMAT, data)[OUTGAUGE_RPM_IDX]
+                except struct.error:
+                    pass
+
+    @property
+    def seen(self) -> bool:
+        return self._seen
+
+    @property
+    def driving(self) -> bool:
+        return ((time.monotonic() - self._last_rx) < self._silence
+                and self.rpm > BEAMNG_RPM_MIN)
+
+    def wait_seen(self, timeout: float) -> bool:
+        """Block up to `timeout` seconds for the first OutGauge packet (used by
+        auto-detect). Returns True as soon as one arrives."""
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            if self._seen:
+                return True
+            time.sleep(0.02)
+        return self._seen
+
+    def stop(self) -> None:
+        self._running = False
+        try:
+            self._sock.close()
+        except OSError:
+            pass
+
+
 # ── Fader (drives any volume backend) ───────────────────────────────────────--
 class Fader:
     def __init__(self, set_fn: Callable[[float], None], attack: float,
@@ -1043,13 +1127,16 @@ class Engine:
         self.on_error = on_error
         self.status = {"running": False, "state": NO_SIGNAL, "ducking": False,
                        "paused": False, "prob": 0.0, "volume": 1.0,
-                       "backend": "", "monitor": "", "override": False}
+                       "backend": "", "monitor": "", "override": False,
+                       "mode": "forza", "rpm": 0.0}
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._vol = None
         self._fader = None
         self._tele = None
         self._cap = None
+        self._beam = None
+        self._mode = "forza"
         self._base = 1.0
         self._music_paused = False
         self._override = False
@@ -1058,8 +1145,50 @@ class Engine:
     # -- lifecycle -------------------------------------------------------------
     def start(self) -> Optional[str]:
         """Set everything up and launch the loop thread. Returns None on success
-        or a human-readable error string (so a GUI can surface it)."""
+        or a human-readable error string (so a GUI can surface it).
+
+        Auto-detects the game: if BeamNG OutGauge packets are arriving it runs
+        telemetry-only media-sync mode (no audio); otherwise it runs Forza
+        audio-ducking mode."""
         cfg = self.cfg
+
+        # Volume backend — both modes drive the music through it.
+        vol = make_volume_backend(cfg.volume_backend, cfg.player, cfg.music_match)
+        if not vol.present():
+            return (f"Volume backend '{vol.name}' found no target. Start your "
+                    f"player; check names with the players command.")
+        self._vol = vol
+        self._base = vol.get()
+
+        # ── BeamNG media-sync mode (telemetry only — no VAD, no capture) ──
+        if cfg.game in ("auto", "beamng"):
+            beam = BeamNGTelemetry(cfg.beamng_port)
+            detected = (cfg.game == "beamng") or beam.wait_seen(1.0)
+            if detected:
+                if not vol.supports_transport():
+                    beam.stop()
+                    self._cleanup()
+                    return (f"BeamNG mode pauses your music, which needs MPRIS "
+                            f"transport — '{vol.name}' doesn't have it. Use the "
+                            f"mpris or playerctl backend.")
+                self._beam = beam
+                self._mode = "beamng"
+                self._fader = Fader(vol.set, cfg.attack, cfg.release, self._base)
+                self.status.update(running=True, mode="beamng", backend=vol.name,
+                                   monitor="BeamNG OutGauge", volume=self._base,
+                                   paused=False, override=False, state=STOPPED)
+                self._override = False
+                self._stop.clear()
+                self._thread = threading.Thread(target=self._run_beamng, daemon=True)
+                self._thread.start()
+                logging.info("BeamNG detected on :%d — media-sync mode "
+                             "(music pauses when you're not driving).", cfg.beamng_port)
+                _notify("BeamNG detected", "Media-sync mode — music follows driving.")
+                self._emit()
+                return None
+            beam.stop()                    # not BeamNG; free the port for next time
+
+        # ── Forza audio-ducking mode ──
         try:
             import numpy as np
             import onnxruntime  # noqa: F401  (presence check)
@@ -1071,10 +1200,6 @@ class Engine:
                     "underscore.py or set UNDERSCORE_VAD_MODEL (the package bundles it).")
         self._np = np
 
-        vol = make_volume_backend(cfg.volume_backend, cfg.player, cfg.music_match)
-        if not vol.present():
-            return (f"Volume backend '{vol.name}' found no target. Start your "
-                    f"player; check names with the players command.")
         if cfg.menu_policy == "pause" and not vol.supports_transport():
             return (f"menu-policy 'pause' needs MPRIS transport, which '{vol.name}' "
                     f"lacks. Use the playerctl backend.")
@@ -1092,8 +1217,6 @@ class Engine:
         if cfg.menu_policy == "pause" and not use_tele:
             return "menu-policy 'pause' requires telemetry (don't disable it)."
 
-        self._vol = vol
-        self._base = vol.get()
         self._fader = Fader(vol.set, cfg.attack, cfg.release, self._base)
         escalate = cfg.menu_policy != "pause"
         self._tele = (TelemetryClassifier(cfg.port, cfg.pause_grace, escalate)
@@ -1106,8 +1229,10 @@ class Engine:
             self._cleanup()
             return str(e)
 
-        self.status.update(running=True, backend=vol.name, monitor=monitor,
-                           volume=self._base, paused=False, override=False)
+        self._mode = "forza"
+        self.status.update(running=True, mode="forza", backend=vol.name,
+                           monitor=monitor, volume=self._base, paused=False,
+                           override=False)
         self._override = False
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -1144,6 +1269,8 @@ class Engine:
         with self._clean_lock:                 # safe if loop + stop() both call
             if self._tele:
                 self._tele.stop()
+            if self._beam:
+                self._beam.stop()
             if self._music_paused and self._vol:
                 self._vol.play()
                 self._music_paused = False
@@ -1159,7 +1286,7 @@ class Engine:
                         self._cap.kill()
                     except Exception:
                         pass
-            self._tele = self._fader = self._cap = None
+            self._tele = self._fader = self._cap = self._beam = None
 
     def _emit(self) -> None:
         if self.on_status:
@@ -1175,6 +1302,55 @@ class Engine:
                            prob=round(prob, 3), volume=round(vol, 3))
         if changed:
             self._emit()
+
+    # -- the loops -------------------------------------------------------------
+    def _run_beamng(self) -> None:
+        """Media-sync loop: pause the music when you're not driving (sim paused,
+        on-foot, or engine off), resume it when you are. No audio is captured."""
+        cfg = self.cfg
+        vol, fader, beam, base = self._vol, self._fader, self._beam, self._base
+        self._music_paused = False
+        not_driving_since = None
+        pause_delay = 1.0          # hold off this long before pausing (respawns, etc.)
+
+        while not self._stop.is_set():
+            now = time.monotonic()
+            self.status["rpm"] = round(beam.rpm)
+            driving = beam.driving
+
+            if self._override:                          # override = always play
+                if self._music_paused:
+                    vol.play()
+                    fader.fade_to(base, cfg.resume_fade)
+                    self._music_paused = False
+                    self.status["paused"] = False
+                    self._emit()
+                self._tick_status("OVERRIDE", False, 0.0)
+                time.sleep(0.1)
+                continue
+
+            if driving:
+                not_driving_since = None
+                if self._music_paused:
+                    logging.info("driving — resuming music")
+                    vol.play()
+                    fader.fade_to(base, cfg.resume_fade)
+                    self._music_paused = False
+                    self.status["paused"] = False
+                    self._emit()
+                self._tick_status(DRIVING, False, 0.0)
+            else:
+                if not_driving_since is None:
+                    not_driving_since = now
+                if (now - not_driving_since) >= pause_delay and not self._music_paused:
+                    logging.info("not driving — pausing music")
+                    vol.pause()
+                    fader.snap(0.0)                     # mute now so resume can't blip
+                    self._music_paused = True
+                    self.status["paused"] = True
+                    self._emit()
+                self._tick_status(STOPPED, False, 0.0)
+            time.sleep(0.1)
 
     # -- the loop --------------------------------------------------------------
     def _run(self) -> None:
@@ -1289,7 +1465,8 @@ def config_from_args(args: argparse.Namespace) -> Config:
         release_threshold=args.release_threshold, attack=args.attack,
         release=args.release, resume_fade=args.resume_fade,
         hangover=args.hangover, pause_grace=args.pause_grace,
-        port=args.port, no_telemetry=args.no_telemetry)
+        port=args.port, no_telemetry=args.no_telemetry,
+        game=args.game, beamng_port=args.beamng_port)
 
 
 def _pidfile_path() -> str:
@@ -1432,6 +1609,10 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--port", type=int, default=5335, help="Forza Data Out UDP port")
     r.add_argument("--no-telemetry", action="store_true",
                    help="Disable state machine; gameplay/VAD policy everywhere")
+    r.add_argument("--game", choices=["auto", "forza", "beamng"], default="auto",
+                   help="Game mode (auto-detects BeamNG OutGauge vs Forza)")
+    r.add_argument("--beamng-port", type=int, default=4444,
+                   help="BeamNG OutGauge UDP port (media-sync mode)")
 
     d = sub.add_parser("diag", help="Print live telemetry state (find pause behaviour)")
     d.add_argument("--port", type=int, default=5335, help="Forza Data Out UDP port")

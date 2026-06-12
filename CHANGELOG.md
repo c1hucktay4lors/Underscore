@@ -4,6 +4,18 @@ All notable changes to Underscore. Versions are pre-1.0 while the project
 stabilises; the patch number bumps with each meaningful change. Numbering starts
 from when the GUI work began (earlier CLI-only history is not versioned here).
 
+## 0.0.20
+- **BeamNG.drive media-sync mode.** Underscore now auto-detects BeamNG's OutGauge
+  telemetry (a 96-byte UDP packet, vs Forza's ~324) and switches to a telemetry-only
+  mode with no audio capture or VAD: it pauses your music when you're not driving and
+  resumes it when you are. "Driving" = OutGauge packets arriving *and* RPM above
+  idle-off, which covers all three quiet cases — sim paused (packets stop), on-foot,
+  and engine off (packets continue but RPM is 0). A ~1s hold avoids pausing through
+  respawns. Notice printed to the terminal and GUI; the override button becomes
+  "Keep music playing". Enable OutGauge in BeamNG → `127.0.0.1:4444`. Manual override
+  via `--game {auto,forza,beamng}` / `--beamng-port`. (Ignition/accessory awareness
+  stays parked for the Lua mod; this is the mod-free path.)
+
 ## 0.0.19
 - **GUI guide tab.** The window is now split into two tabs: **Ducker** (the
   controls) and **Guide**, a scrollable in-app explainer covering how it works,

@@ -445,16 +445,26 @@ class MainWindow(QMainWindow):
         self.btn_toggle.setText("Stop")
         self.btn_suspend.setEnabled(True)
         self.btn_suspend.setChecked(False)
-        self.btn_suspend.setText("Suspend ducking")
+        self.btn_suspend.setText(self._suspend_label(False))
         self.lbl_state.setText("Running")
         try:
             with open(_pidfile_path(), "w") as f:      # so `underscore toggle` finds us
                 f.write(str(os.getpid()))
         except OSError:
             pass
-        self._append("Running — backend %s, monitor %s"
-                     % (eng.status["backend"], eng.status["monitor"]))
+        if eng.status.get("mode") == "beamng":
+            self._append("BeamNG detected — media-sync mode: music pauses when "
+                         "you're not driving (no audio capture).")
+        else:
+            self._append("Running — backend %s, monitor %s"
+                         % (eng.status["backend"], eng.status["monitor"]))
         self.poll.start()
+
+    def _suspend_label(self, on: bool) -> str:
+        beam = bool(self.engine) and self.engine.status.get("mode") == "beamng"
+        if beam:
+            return "Resume auto-sync" if on else "Keep music playing"
+        return "Resume ducking" if on else "Suspend ducking"
 
     def _stop(self):
         self.poll.stop()
@@ -480,9 +490,14 @@ class MainWindow(QMainWindow):
         if not self.engine:
             return
         on = self.engine.toggle_override()
+        beam = self.engine.status.get("mode") == "beamng"
         self.btn_suspend.setChecked(on)
-        self.btn_suspend.setText("Resume ducking" if on else "Suspend ducking")
-        self._append("Ducking " + ("suspended (override on)" if on else "resumed"))
+        self.btn_suspend.setText(self._suspend_label(on))
+        if beam:
+            self._append("Music " + ("held playing (auto-sync off)" if on
+                                      else "auto-sync resumed"))
+        else:
+            self._append("Ducking " + ("suspended (override on)" if on else "resumed"))
 
     def _check_signals(self):
         if self._sig_toggle:
@@ -491,12 +506,13 @@ class MainWindow(QMainWindow):
 
     def _on_status(self, s: dict):
         ov = s.get("override", False)
+        beam = s.get("mode") == "beamng"
         if self.btn_suspend.isChecked() != ov:         # keep button in sync with
             self.btn_suspend.setChecked(ov)            # signal/tray toggles
-            self.btn_suspend.setText("Resume ducking" if ov else "Suspend ducking")
+            self.btn_suspend.setText(self._suspend_label(ov))
         bits = [s.get("state", "—")]
         if ov:
-            bits.append("OVERRIDE — ducking off")
+            bits.append("OVERRIDE — music playing" if beam else "OVERRIDE — ducking off")
         elif s.get("paused"):
             bits.append("PAUSED")
         elif s.get("ducking"):
@@ -597,6 +613,12 @@ class MainWindow(QMainWindow):
           <li><b>never</b> &mdash; never duck in menus.</li>
           <li><b>pause</b> &mdash; pause the music entirely in menus.</li>
         </ul>
+
+        <h3>BeamNG.drive (media-sync)</h3>
+        <p>If Underscore sees BeamNG's OutGauge telemetry it switches automatically to
+        <b>media-sync</b> mode — no audio, no ducking. Instead it pauses your music when
+        you're not driving (game paused, on-foot, or engine off) and resumes it when you
+        are. Enable OutGauge in BeamNG's options, pointed at <tt>127.0.0.1:4444</tt>.</p>
 
         <h3>Suspending ducking on the fly</h3>
         <p>Use the <b>Suspend ducking</b> button (or the tray entry) to hold the music at
