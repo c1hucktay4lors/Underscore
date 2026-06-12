@@ -4,6 +4,19 @@ All notable changes to Underscore. Versions are pre-1.0 while the project
 stabilises; the patch number bumps with each meaningful change. Numbering starts
 from when the GUI work began (earlier CLI-only history is not versioned here).
 
+## 0.0.17
+- **Installer overhaul.** `install.sh` is now a proper user-level installer: it
+  detects your package manager (pacman/apt/dnf/zypper), lists the missing system
+  packages it needs, and asks before installing them; then builds the pip venv and
+  installs Underscore under `~/.local/share/underscore` (XDG_DATA_HOME) with
+  `underscore` / `underscore-gui` wrappers in `~/.local/bin`. Same location on
+  every distro, no shell alias, and `./install.sh uninstall` cleans it back up.
+- **GNOME dock icon.** The GUI now sets its Wayland app_id via
+  `setDesktopFileName("underscore")`, and the desktop entry carries
+  `StartupWMClass=underscore`, so GNOME's dock/panel matches the window to the
+  installed icon instead of showing a generic one. (The tray was already correct.)
+- Dropped the "not affiliated with Segue" line from the About dialog.
+
 ## 0.0.16
 - The override toggle now fires a desktop notification ("Ducking suspended" /
   "Ducking resumed") via `notify-send`, so you get feedback when you hit the key

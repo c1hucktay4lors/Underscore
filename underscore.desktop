@@ -6,6 +6,7 @@ Comment=Duck your music under in-game dialogue
 Exec=underscore-gui
 Icon=underscore
 Terminal=false
+StartupWMClass=underscore
 Categories=AudioVideo;Audio;Game;Utility;
 Keywords=ducking;volume;forza;music;spotify;game;
 StartupNotify=true

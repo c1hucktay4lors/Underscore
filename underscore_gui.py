@@ -553,8 +553,7 @@ class MainWindow(QMainWindow):
             "Audio-side dialogue ducker for Forza Horizon on Linux.<br><br>"
             "Created by <b>c1hucktay4lors</b>, developed in close collaboration "
             "with <b>Claude</b> (Anthropic).<br><br>"
-            "Speech detection uses the Silero VAD model (silero-vad, MIT). "
-            "Independent project; not affiliated with the Windows app \"Segue\".<br><br>"
+            "Speech detection uses the Silero VAD model (silero-vad, MIT).<br><br>"
             "Licensed under the MIT License.")
 
     def closeEvent(self, e):
@@ -575,6 +574,12 @@ def _wrap(layout) -> QWidget:
 def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("Underscore")
+    app.setApplicationDisplayName("Underscore")
+    # Wayland uses this as the app_id; GNOME's dock matches it to underscore.desktop
+    # to pick the icon. Without it the dock falls back to a generic icon even though
+    # the window/tray icon (set via QIcon) is correct.
+    app.setDesktopFileName("underscore")
+    app.setWindowIcon(app_icon())
     win = MainWindow()
     win.resize(440, 720)
     win.show()
