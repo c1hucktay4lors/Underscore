@@ -100,7 +100,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-__version__ = "0.0.14"
+__version__ = "0.0.16"
 
 SINK_NAME = "underscore_game"
 SAMPLE_RATE = 16000
@@ -178,6 +178,19 @@ def have(binary: str) -> bool:
 
 def _run(cmd: list[str], check: bool = False) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=True, check=check)
+
+
+def _notify(summary: str, body: str = "") -> None:
+    """Best-effort desktop notification (libnotify's notify-send). Non-blocking;
+    silently does nothing if notify-send isn't installed."""
+    if not have("notify-send"):
+        return
+    try:
+        subprocess.Popen(
+            ["notify-send", "-a", "Underscore", "-i", "underscore", summary, body],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError:
+        pass
 
 
 # ── Volume backends ─────────────────────────────────────────────────────────--
@@ -1033,7 +1046,7 @@ class Engine:
         self.on_error = on_error
         self.status = {"running": False, "state": NO_SIGNAL, "ducking": False,
                        "paused": False, "prob": 0.0, "volume": 1.0,
-                       "backend": "", "monitor": ""}
+                       "backend": "", "monitor": "", "override": False}
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._vol = None
@@ -1042,6 +1055,7 @@ class Engine:
         self._cap = None
         self._base = 1.0
         self._music_paused = False
+        self._override = False
         self._clean_lock = threading.Lock()
 
     # -- lifecycle -------------------------------------------------------------
@@ -1096,12 +1110,29 @@ class Engine:
             return str(e)
 
         self.status.update(running=True, backend=vol.name, monitor=monitor,
-                           volume=self._base, paused=False)
+                           volume=self._base, paused=False, override=False)
+        self._override = False
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
         self._emit()
         return None
+
+    def toggle_override(self) -> bool:
+        """Suspend/resume ducking on the fly. While suspended the music is held
+        at its base level (and un-paused) and speech is ignored. The run loop
+        applies the actual change on its next tick, so only it touches audio.
+        Returns the new override state."""
+        self._override = not self._override
+        self.status["override"] = self._override
+        logging.info("override %s", "ON — ducking suspended" if self._override
+                     else "OFF — ducking resumed")
+        if self._override:
+            _notify("Ducking suspended", "Override on — music at full volume.")
+        else:
+            _notify("Ducking resumed", "Underscore is ducking again.")
+        self._emit()
+        return self._override
 
     def stop(self) -> None:
         self._stop.set()
@@ -1185,6 +1216,18 @@ class Engine:
 
             state = tele.state if tele else GAMEPLAY
 
+            if self._override:
+                # ducking suspended on the fly — keep music at base and playing
+                if self._music_paused:
+                    vol.play()
+                    self._music_paused = False
+                    self.status["paused"] = False
+                if cmd != base:
+                    fader.set_target(base)
+                    cmd = base
+                self._tick_status(state, False, prob)
+                continue
+
             if cfg.menu_policy == "pause":
                 if cfg.pause_scope == "from-gameplay":
                     want_pause = (state == PAUSED)
@@ -1252,6 +1295,11 @@ def config_from_args(args: argparse.Namespace) -> Config:
         port=args.port, no_telemetry=args.no_telemetry)
 
 
+def _pidfile_path() -> str:
+    base = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
+    return os.path.join(base, "underscore.pid")
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     cfg = config_from_args(args)
     eng = Engine(cfg)
@@ -1261,19 +1309,61 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 1
     logging.info("Backend: %s | monitor: %s | policy: %s",
                  eng.status["backend"], eng.status["monitor"], cfg.menu_policy)
-    logging.info("Running. Ctrl-C to stop.")
+    logging.info("Running. Ctrl-C to stop · SIGUSR1 (underscore toggle) suspends ducking.")
+
+    pidpath = _pidfile_path()
+    try:
+        with open(pidpath, "w") as f:
+            f.write(str(os.getpid()))
+    except OSError:
+        pidpath = None
+
     stop = threading.Event()
-    prev = signal.getsignal(signal.SIGTERM)
-    signal.signal(signal.SIGTERM, lambda *_: stop.set())   # systemctl stop, etc.
+    toggle = threading.Event()
+    prev_term = signal.getsignal(signal.SIGTERM)
+    prev_usr1 = signal.getsignal(signal.SIGUSR1)
+    signal.signal(signal.SIGTERM, lambda *_: stop.set())     # systemctl stop, etc.
+    signal.signal(signal.SIGUSR1, lambda *_: toggle.set())   # the override keypress
     try:
         while eng.status["running"] and not stop.is_set():
-            time.sleep(0.3)
+            if toggle.is_set():
+                toggle.clear()
+                eng.toggle_override()
+            time.sleep(0.2)
     except KeyboardInterrupt:
         pass
     finally:
-        signal.signal(signal.SIGTERM, prev)
+        signal.signal(signal.SIGTERM, prev_term)
+        signal.signal(signal.SIGUSR1, prev_usr1)
+        if pidpath:
+            try:
+                os.remove(pidpath)
+            except OSError:
+                pass
     logging.info("Restoring volume and stopping.")
     eng.stop()
+    return 0
+
+
+def cmd_toggle(args: argparse.Namespace) -> int:
+    """Signal a running Underscore to suspend/resume ducking. Bind a DE keyboard
+    shortcut to `underscore toggle` for an on-the-fly override key."""
+    pidpath = _pidfile_path()
+    try:
+        with open(pidpath) as f:
+            pid = int(f.read().strip())
+    except (OSError, ValueError):
+        print("No running Underscore found. Start `underscore run` or the GUI first.")
+        return 1
+    try:
+        os.kill(pid, signal.SIGUSR1)
+    except ProcessLookupError:
+        print("Underscore isn't running (stale pidfile).")
+        return 1
+    except PermissionError:
+        print("Not permitted to signal the Underscore process.")
+        return 1
+    print("Toggled ducking override.")
     return 0
 
 
@@ -1294,6 +1384,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("sources", help="List capture targets (find --game-monitor)")
     sub.add_parser("setup", help="Create a virtual sink to isolate the game")
     sub.add_parser("teardown", help="Remove the virtual sink")
+    sub.add_parser("toggle", help="Suspend/resume ducking in a running instance "
+                                  "(bind a DE shortcut to this)")
 
     r = sub.add_parser("run", help="Run the ducker")
     r.add_argument("--player", default="spotify",
@@ -1360,7 +1452,7 @@ def main() -> int:
     return {
         "players": cmd_players, "sources": cmd_sources,
         "setup": cmd_setup, "teardown": cmd_teardown,
-        "run": cmd_run, "diag": cmd_diag,
+        "run": cmd_run, "diag": cmd_diag, "toggle": cmd_toggle,
     }[args.cmd](args)
 
 

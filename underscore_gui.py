@@ -13,6 +13,7 @@ Created by c1hucktay4lors, in collaboration with Claude (Anthropic). MIT License
 from __future__ import annotations
 
 import os
+import signal
 import sys
 
 from PySide6.QtCore import Qt, QObject, Signal, QTimer
@@ -27,6 +28,7 @@ from underscore import (
     Config, Engine, load_config, save_config, __version__,
     default_monitor, list_players, list_capture_targets,
     vsink_exists, create_virtual_sink, remove_virtual_sink, restart_pipewire,
+    _pidfile_path,
 )
 
 MENU_POLICIES = ["speech", "always", "never", "pause"]
@@ -108,6 +110,20 @@ class MainWindow(QMainWindow):
         self.poll.setInterval(60)                      # ~16 fps meters
         self.poll.timeout.connect(self._poll)
 
+        # let `underscore toggle` (a DE keyboard shortcut) drive the GUI too:
+        # SIGUSR1 sets a flag that a steady QTimer processes on the GUI thread
+        # (the timer also keeps the Python interpreter ticking under Qt so the
+        # signal is actually delivered).
+        self._sig_toggle = False
+        try:
+            signal.signal(signal.SIGUSR1, lambda *_: setattr(self, "_sig_toggle", True))
+        except (ValueError, OSError):
+            pass                                       # not the main thread / unsupported
+        self._sigtimer = QTimer(self)
+        self._sigtimer.setInterval(150)
+        self._sigtimer.timeout.connect(self._check_signals)
+        self._sigtimer.start()
+
         self._build_tray()
 
     # -- UI construction ------------------------------------------------------
@@ -121,9 +137,17 @@ class MainWindow(QMainWindow):
         self.btn_toggle = QPushButton("Start")
         self.btn_toggle.setMinimumWidth(110)
         self.btn_toggle.clicked.connect(self._toggle)
+        self.btn_suspend = QPushButton("Suspend ducking")
+        self.btn_suspend.setCheckable(True)
+        self.btn_suspend.setEnabled(False)
+        self.btn_suspend.setToolTip(
+            "Temporarily stop ducking and hold the music at full volume.\n"
+            "Also bindable to a desktop shortcut via `underscore toggle`.")
+        self.btn_suspend.clicked.connect(self._toggle_override)
         self.lbl_state = QLabel("Stopped")
         self.lbl_state.setStyleSheet("font-weight: 600;")
         header.addWidget(self.btn_toggle)
+        header.addWidget(self.btn_suspend)
         header.addWidget(self.lbl_state, 1)
         root.addLayout(header)
 
@@ -413,7 +437,15 @@ class MainWindow(QMainWindow):
         self.engine = eng
         self.settings.setEnabled(False)
         self.btn_toggle.setText("Stop")
+        self.btn_suspend.setEnabled(True)
+        self.btn_suspend.setChecked(False)
+        self.btn_suspend.setText("Suspend ducking")
         self.lbl_state.setText("Running")
+        try:
+            with open(_pidfile_path(), "w") as f:      # so `underscore toggle` finds us
+                f.write(str(os.getpid()))
+        except OSError:
+            pass
         self._append("Running — backend %s, monitor %s"
                      % (eng.status["backend"], eng.status["monitor"]))
         self.poll.start()
@@ -425,15 +457,41 @@ class MainWindow(QMainWindow):
             self.engine = None
         self.settings.setEnabled(True)
         self.btn_toggle.setText("Start")
+        self.btn_suspend.setEnabled(False)
+        self.btn_suspend.setChecked(False)
+        self.btn_suspend.setText("Suspend ducking")
         self.lbl_state.setText("Stopped")
         self.bar_speech.setValue(0)
         self.bar_volume.setValue(0)
+        try:
+            os.remove(_pidfile_path())
+        except OSError:
+            pass
         self._append("Stopped — volume restored")
 
     # -- live updates ---------------------------------------------------------
+    def _toggle_override(self):
+        if not self.engine:
+            return
+        on = self.engine.toggle_override()
+        self.btn_suspend.setChecked(on)
+        self.btn_suspend.setText("Resume ducking" if on else "Suspend ducking")
+        self._append("Ducking " + ("suspended (override on)" if on else "resumed"))
+
+    def _check_signals(self):
+        if self._sig_toggle:
+            self._sig_toggle = False
+            self._toggle_override()
+
     def _on_status(self, s: dict):
+        ov = s.get("override", False)
+        if self.btn_suspend.isChecked() != ov:         # keep button in sync with
+            self.btn_suspend.setChecked(ov)            # signal/tray toggles
+            self.btn_suspend.setText("Resume ducking" if ov else "Suspend ducking")
         bits = [s.get("state", "—")]
-        if s.get("paused"):
+        if ov:
+            bits.append("OVERRIDE — ducking off")
+        elif s.get("paused"):
             bits.append("PAUSED")
         elif s.get("ducking"):
             bits.append("ducking")
@@ -468,11 +526,14 @@ class MainWindow(QMainWindow):
         menu = QMenu()
         act_show = QAction("Show / Hide", self)
         act_show.triggered.connect(self._toggle_window)
+        act_suspend = QAction("Suspend / resume ducking", self)
+        act_suspend.triggered.connect(self._toggle_override)
         act_about = QAction("About Underscore", self)
         act_about.triggered.connect(self._about)
         act_quit = QAction("Quit", self)
         act_quit.triggered.connect(self.close)
         menu.addAction(act_show)
+        menu.addAction(act_suspend)
         menu.addAction(act_about)
         menu.addSeparator()
         menu.addAction(act_quit)

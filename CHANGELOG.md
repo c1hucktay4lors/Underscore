@@ -4,6 +4,34 @@ All notable changes to Underscore. Versions are pre-1.0 while the project
 stabilises; the patch number bumps with each meaningful change. Numbering starts
 from when the GUI work began (earlier CLI-only history is not versioned here).
 
+## 0.0.16
+- The override toggle now fires a desktop notification ("Ducking suspended" /
+  "Ducking resumed") via `notify-send`, so you get feedback when you hit the key
+  mid-game with the GUI hidden. Best-effort: it carries the Underscore app name
+  and icon, and silently no-ops if `libnotify`/`notify-send` isn't installed
+  (added as a PKGBUILD optdepend).
+
+## 0.0.15
+- **On-the-fly override (suspend ducking).** A toggle that holds the music at
+  full volume and ignores speech until you toggle back — borrowed from the BeamNG
+  mixer. Available as a GUI button + tray entry, and as `underscore toggle`, which
+  signals a running instance over `SIGUSR1`. Bind a desktop keyboard shortcut to
+  `underscore toggle` for a true override key (this works on Wayland, where apps
+  can't grab global hotkeys themselves — the DE owns the key and just pokes the
+  process). The running `run`/GUI writes a pidfile so `toggle` can find it.
+- `install.sh`: added a Python prerequisite preflight — if `python3`/`venv`/`pip`
+  are missing it prints the exact install command for the detected distro
+  (pacman/apt/dnf/zypper) instead of failing cryptically, then does the rest via
+  pip in the venv. Also corrected the stale "playerctl required" note (it's an
+  optional fallback now that D-Bus/jeepney is the default).
+
+## 0.0.14
+- Added a proper app icon (`underscore.svg`) — a ducking audio waveform on an
+  amber underscore baseline. The desktop entry now uses `Icon=underscore`, and
+  the GUI sets it as both the window and tray icon (resolving the themed name
+  when installed, the bundled SVG when run from source). The PKGBUILD installs
+  it into the hicolor theme and alongside the app.
+
 ## 0.0.13
 - `run` now handles `SIGTERM` (e.g. `systemctl --user stop`) the same way it
   handles Ctrl-C: it restores the player's volume and stops cleanly, instead of

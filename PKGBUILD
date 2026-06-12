@@ -24,7 +24,7 @@
 # See RELEASE.md for the full step-by-step.
 
 pkgname=underscore
-pkgver=0.0.14
+pkgver=0.0.16
 pkgrel=1
 pkgdesc="Audio-side dialogue ducker for Forza Horizon on Linux (ducks/pauses your music for in-game dialogue)"
 arch=('any')
@@ -49,6 +49,7 @@ depends=(
 )
 optdepends=(
   'playerctl: fallback MPRIS backend (--volume-backend playerctl)'
+  'libnotify: desktop notification when the override toggle is pressed'
   'pipewire-pulse: PulseAudio-compatible capture fallback (parec)'
 )
 # Pinned to the silero-vad v6.2.1 release tag so the file (and its checksum)
