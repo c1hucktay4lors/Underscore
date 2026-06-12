@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QPushButton, QLabel, QComboBox,
     QSlider, QGroupBox, QFormLayout, QVBoxLayout, QHBoxLayout, QGridLayout,
     QProgressBar, QPlainTextEdit, QMessageBox, QSystemTrayIcon, QMenu,
+    QTabWidget, QTextBrowser,
 )
 
 from underscore import (
@@ -255,13 +256,18 @@ class MainWindow(QMainWindow):
         root.addWidget(self.log, 1)        # stretch: extra height grows the log
 
         # center the width-capped content so maximizing looks intentional
-        wrap = QWidget()
-        outer = QHBoxLayout(wrap)
+        ducker = QWidget()
+        outer = QHBoxLayout(ducker)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addStretch(1)
         outer.addWidget(content)
         outer.addStretch(1)
-        self.setCentralWidget(wrap)
+
+        self.tabs = QTabWidget()
+        self.tabs.addTab(ducker, "Ducker")
+        self.guide_tab = self._build_guide()
+        self.tabs.addTab(self.guide_tab, "Guide")
+        self.setCentralWidget(self.tabs)
         self._apply_tooltips(f_audio, f_duck, f_det)
         self._refresh_players()
         self._refresh_monitors()
@@ -546,15 +552,75 @@ class MainWindow(QMainWindow):
     def _toggle_window(self):
         self.hide() if self.isVisible() else self.showNormal()
 
+    def _build_guide(self) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(0, 0, 0, 0)
+        view = QTextBrowser()
+        view.setOpenExternalLinks(True)
+        view.setHtml(self._guide_html())
+        lay.addWidget(view)
+        return w
+
+    def _guide_html(self) -> str:
+        return f"""
+        <h2>Underscore</h2>
+        <p><i>Audio-side dialogue ducker for Forza Horizon on Linux.</i></p>
+
+        <h3>How it works</h3>
+        <p>Underscore captures the game's audio from a PipeWire monitor and runs it
+        through a speech-detection model. When in-game dialogue starts it fades your
+        music down, then brings it back when the talking stops &mdash; it listens to
+        the game's <i>audio</i>, so no mods or game telemetry are needed.</p>
+
+        <h3>Getting game-only audio (recommended)</h3>
+        <p>Capturing your default output works, but it also hears your music, which can
+        false-trigger on vocals. To feed Underscore only the game:</p>
+        <ol>
+          <li>Run <b>Setup virtual sink</b> (or <tt>underscore setup</tt>) to create an
+              <b>Underscore_Game</b> sink. It mirrors to your current output and follows
+              you across device changes (speakers, Bluetooth, HDMI).</li>
+          <li>Route the game into it. <b>KDE:</b> use the audio applet's per-app output.
+              <b>GNOME:</b> install <tt>pavucontrol</tt> and, in its Playback tab, set the
+              game's output to Underscore_Game (GNOME's own settings can't route per-app).</li>
+          <li>Pick <b>underscore_game.monitor</b> as the capture source.</li>
+        </ol>
+        <p><b>GNOME note:</b> the Sound panel hides &ldquo;monitor&rdquo; sources, so the
+        game's audio won't appear there &mdash; choose the capture source here in
+        Underscore instead.</p>
+
+        <h3>Menu behavior</h3>
+        <p>Controls what happens outside of gameplay:</p>
+        <ul>
+          <li><b>speech</b> (default) &mdash; duck only when speech is detected.</li>
+          <li><b>always</b> &mdash; keep music ducked while in menus.</li>
+          <li><b>never</b> &mdash; never duck in menus.</li>
+          <li><b>pause</b> &mdash; pause the music entirely in menus.</li>
+        </ul>
+
+        <h3>Suspending ducking on the fly</h3>
+        <p>Use the <b>Suspend ducking</b> button (or the tray entry) to hold the music at
+        full volume and ignore speech until you toggle it back. For an in-game key, bind a
+        desktop keyboard shortcut to <tt>underscore toggle</tt>. (Apps can't grab global
+        hotkeys on Wayland, so the desktop owns the key and signals Underscore &mdash;
+        which works on both Wayland and X11.) Each toggle shows a desktop notification.</p>
+
+        <hr>
+        <h3>About</h3>
+        <p><b>Underscore</b> {__version__}<br>
+        Created by <b>c1hucktay4lors</b>, developed in close collaboration with
+        <b>Claude</b> (Anthropic).<br>
+        Speech detection uses the Silero VAD model
+        (<a href="https://github.com/snakers4/silero-vad">silero-vad</a>, MIT).<br>
+        Licensed under the MIT License.</p>
+        """
+
     def _about(self):
-        QMessageBox.about(
-            self, "About Underscore",
-            f"<b>Underscore</b> {__version__}<br>"
-            "Audio-side dialogue ducker for Forza Horizon on Linux.<br><br>"
-            "Created by <b>c1hucktay4lors</b>, developed in close collaboration "
-            "with <b>Claude</b> (Anthropic).<br><br>"
-            "Speech detection uses the Silero VAD model (silero-vad, MIT).<br><br>"
-            "Licensed under the MIT License.")
+        # About now lives in the Guide tab — bring the window up and jump there.
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+        self.tabs.setCurrentWidget(self.guide_tab)
 
     def closeEvent(self, e):
         if self.engine:

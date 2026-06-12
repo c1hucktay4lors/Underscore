@@ -100,7 +100,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-__version__ = "0.0.17"
+__version__ = "0.0.19"
 
 SINK_NAME = "underscore_game"
 SAMPLE_RATE = 16000
@@ -598,11 +598,12 @@ def vsink_exists() -> bool:
     return vsink_config_path().exists()
 
 
-def _vsink_conf(real_sink: str) -> str:
+def _vsink_conf() -> str:
     return f"""# Underscore virtual sink — managed by `underscore setup` / `teardown`.
-# Audio sent to "Underscore_Game" is mirrored to your real output ({real_sink}),
-# so route your game here to capture its audio without your music self-triggering
-# speech detection. Delete this file (or run `underscore teardown`) to remove it.
+# Audio sent to "Underscore_Game" is mirrored to your CURRENT default output and
+# follows it when you switch devices (speakers, Bluetooth, HDMI…), so route your
+# game here to capture its audio without your music self-triggering speech
+# detection. Delete this file (or run `underscore teardown`) to remove it.
 context.modules = [
     {{ name = libpipewire-module-loopback
         args = {{
@@ -618,7 +619,6 @@ context.modules = [
                 node.name      = "{SINK_NAME}.output"
                 node.passive   = true
                 audio.position = [ FL FR ]
-                target.object  = "{real_sink}"
             }}
         }}
     }}
@@ -627,20 +627,17 @@ context.modules = [
 
 
 def create_virtual_sink() -> tuple:
-    """Write the persistent config that creates Underscore_Game. (ok, message)."""
-    real = default_monitor()
-    real_sink = real[:-len(".monitor")] if real and real.endswith(".monitor") else None
-    if not real_sink or real_sink == SINK_NAME:
-        return (False, "Couldn't determine your real output sink (or it's already "
-                       "the Underscore sink). Set your hardware output as the "
-                       "default, remove the sink, and try again.")
+    """Write the persistent config that creates Underscore_Game. (ok, message).
+    The sink follows your default output, so it keeps working across device
+    changes (e.g. plugging in Bluetooth) without a teardown/re-setup."""
     p = vsink_config_path()
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(_vsink_conf(real_sink))
+        p.write_text(_vsink_conf())
     except OSError as e:
         return (False, f"Could not write {p}: {e}")
-    return (True, f"Virtual sink configured (mirrors to {real_sink}).")
+    return (True, "Virtual sink configured (mirrors to your default output, and "
+                  "follows it when you switch devices).")
 
 
 def remove_virtual_sink() -> tuple:

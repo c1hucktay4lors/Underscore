@@ -4,6 +4,21 @@ All notable changes to Underscore. Versions are pre-1.0 while the project
 stabilises; the patch number bumps with each meaningful change. Numbering starts
 from when the GUI work began (earlier CLI-only history is not versioned here).
 
+## 0.0.19
+- **GUI guide tab.** The window is now split into two tabs: **Ducker** (the
+  controls) and **Guide**, a scrollable in-app explainer covering how it works,
+  getting game-only audio (with the GNOME/pavucontrol note), menu behavior, and the
+  override key — with the About/credits/license folded in at the bottom. The tray
+  "About" entry now jumps to the Guide tab instead of a popup.
+
+## 0.0.18
+- **Virtual sink follows the default output.** `setup` no longer pins the
+  Underscore_Game loopback to whichever device was default at setup time — it now
+  mirrors to your *current* default output and follows it when you switch devices
+  (plug in Bluetooth, HDMI, etc.). No more teardown/re-setup after a device change.
+  This also removes the old "couldn't determine your real output sink" failure mode.
+  (Re-run `setup` once to adopt the new config.)
+
 ## 0.0.17
 - **Installer overhaul.** `install.sh` is now a proper user-level installer: it
   detects your package manager (pacman/apt/dnf/zypper), lists the missing system

@@ -24,7 +24,7 @@
 # See RELEASE.md for the full step-by-step.
 
 pkgname=underscore
-pkgver=0.0.17
+pkgver=0.0.19
 pkgrel=1
 pkgdesc="Audio-side dialogue ducker for Forza Horizon on Linux (ducks/pauses your music for in-game dialogue)"
 arch=('any')
