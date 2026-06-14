@@ -100,7 +100,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-__version__ = "0.0.22"
+__version__ = "0.0.23"
 
 SINK_NAME = "underscore_game"
 SAMPLE_RATE = 16000
@@ -144,6 +144,8 @@ class Config:
     attack: float = 0.12              # fade-down time (s)
     release: float = 0.9              # fade-up time (s)
     resume_fade: float = 2.0          # pause→play fade-in (s)
+    resume_hold: float = 0.2          # force-mute window across player vol reset (s)
+    pause_confirm: float = 0.7        # pause must persist this long before pausing
     hangover: float = 1000.0          # keep ducking after speech drops (ms)
     pause_grace: float = 20.0         # 'always' policy pause grace (s)
     port: int = 5335                  # Forza Data Out UDP port
@@ -890,6 +892,10 @@ class Fader:
         self._current = base
         self._ramp: Optional[float] = None     # one-shot duration override (s)
         self._ramp_step = 0.0                  # fixed per-tick step for linear ramp
+        self._hold_until = 0.0                 # force-write 0 until this monotonic t
+        self._resume_target = base             # where to fade after a hold
+        self._resume_fade = 0.0
+        self._resume_pending = False
         self._tick = 1.0 / tick_hz
         self._lock = threading.Lock()
         self._running = True
@@ -900,6 +906,25 @@ class Fader:
         with self._lock:
             self._target = max(0.0, min(1.0, fraction))
             self._ramp = None                  # revert to attack/release timing
+            self._hold_until = 0.0             # cancel any resume hold/fade
+            self._resume_pending = False
+
+    def resume(self, fraction: float, fade: float, hold: float = 0.2) -> None:
+        """Pause→play recovery without the blip. Players like Spotify reset their
+        own volume to full the instant they get Play, and that reset can land a
+        few tens of ms after our mute. So we hold the volume at 0 — force-writing
+        it every few ms so whenever the player's reset lands it's stomped right
+        back down — for `hold` seconds, THEN ramp up to `fraction` over `fade`."""
+        f = max(0.0, min(1.0, fraction))
+        with self._lock:
+            self._current = 0.0
+            self._target = 0.0
+            self._hold_until = time.monotonic() + max(hold, 0.0)
+            self._resume_target = f
+            self._resume_fade = max(fade, 0.02)
+            self._resume_pending = True
+            self._ramp = None
+        self._set(0.0)
 
     def fade_to(self, fraction: float, duration: float) -> None:
         """Linearly ramp to `fraction` over `duration` s (the pause→play fade-in),
@@ -915,6 +940,8 @@ class Fader:
         with self._lock:
             self._target = self._current = max(0.0, min(1.0, fraction))
             self._ramp = None
+            self._hold_until = 0.0
+            self._resume_pending = False
         self._set(fraction)
 
     def current(self) -> float:
@@ -927,7 +954,21 @@ class Fader:
 
     def _loop(self) -> None:
         while self._running:
+            now = time.monotonic()
             with self._lock:
+                hold_until = self._hold_until
+            if now < hold_until:
+                self._set(0.0)          # stomp the player's volume reset to 0
+                time.sleep(0.01)        # tight cadence so the stomp lands fast
+                continue
+            with self._lock:
+                if self._resume_pending:    # hold finished → start the fade-in
+                    target = self._resume_target
+                    ticks = max(self._resume_fade / self._tick, 1.0)
+                    self._ramp_step = abs(target - self._current) / ticks
+                    self._target = target
+                    self._ramp = self._resume_fade
+                    self._resume_pending = False
                 target, current, ramp = self._target, self._current, self._ramp
             diff = target - current
             if abs(diff) > 0.003:
@@ -1365,8 +1406,7 @@ class Engine:
             if self._override:                          # override = always play
                 if self._music_paused:
                     vol.play()
-                    fader.snap(0.0)                      # slam to 0 the instant we
-                    fader.fade_to(base, cfg.resume_fade) # resume, then ramp up
+                    fader.resume(base, cfg.resume_fade, cfg.resume_hold)
                     self._music_paused = False
                     self.status["paused"] = False
                     self._emit()
@@ -1379,8 +1419,7 @@ class Engine:
                 if self._music_paused:
                     logging.info("driving — resuming music")
                     vol.play()
-                    fader.snap(0.0)                      # slam to 0 the instant we
-                    fader.fade_to(base, cfg.resume_fade) # resume, then ramp up
+                    fader.resume(base, cfg.resume_fade, cfg.resume_hold)
                     self._music_paused = False
                     self.status["paused"] = False
                     self._emit()
@@ -1410,6 +1449,7 @@ class Engine:
         last_state = None
         cmd = base
         idle_since = None          # monotonic time the car first went stationary
+        pause_since = None         # monotonic time want_pause first became true
         self._music_paused = False
 
         while not self._stop.is_set():
@@ -1466,7 +1506,17 @@ class Engine:
                     want_pause = (state == PAUSED)
                 else:
                     want_pause = state in (PAUSED, MENU)
-                if want_pause and not self._music_paused:
+                # Debounce: a car swap in the garage drops telemetry for a packet
+                # or two while the physics reloads. Only pause once the pause has
+                # held for pause_confirm seconds, so those blips are ignored.
+                if want_pause:
+                    if pause_since is None:
+                        pause_since = now
+                    confirmed = (now - pause_since) >= cfg.pause_confirm
+                else:
+                    pause_since = None
+                    confirmed = False
+                if confirmed and not self._music_paused:
                     logging.info("pausing + muting (%s)", state)
                     vol.pause()
                     fader.snap(0.0)        # mute now; resume can't blip
@@ -1476,8 +1526,7 @@ class Engine:
                 elif not want_pause and self._music_paused:
                     logging.info("resuming playback (fade-in %.1fs)", cfg.resume_fade)
                     vol.play()
-                    fader.snap(0.0)                      # slam to 0 the instant we
-                    fader.fade_to(base, cfg.resume_fade) # resume, then ramp up
+                    fader.resume(base, cfg.resume_fade, cfg.resume_hold)
                     cmd = base
                     self._music_paused = False
                     self.status["paused"] = False
@@ -1526,6 +1575,7 @@ def config_from_args(args: argparse.Namespace) -> Config:
         idle=args.idle, menu_idle=args.menu_idle, threshold=args.threshold,
         release_threshold=args.release_threshold, attack=args.attack,
         release=args.release, resume_fade=args.resume_fade,
+        resume_hold=args.resume_hold, pause_confirm=args.pause_confirm,
         hangover=args.hangover, pause_grace=args.pause_grace,
         port=args.port, no_telemetry=args.no_telemetry,
         game=args.game, beamng_port=args.beamng_port,
@@ -1664,6 +1714,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Fade-up time after speech ends (s)")
     r.add_argument("--resume-fade", type=float, default=2.0,
                    help="'pause' policy: fade-in time when resuming from a pause (s)")
+    r.add_argument("--resume-hold", type=float, default=0.2,
+                   help="Force-mute window on resume to kill the player's "
+                        "volume-reset blip (s, default 0.2)")
+    r.add_argument("--pause-confirm", type=float, default=0.7,
+                   help="'pause' policy: how long a pause must hold before pausing "
+                        "the music — filters garage car-swap blips (s, default 0.7)")
     r.add_argument("--hangover", type=float, default=1000.0,
                    help="Keep ducking this long after speech drops away (ms)")
     r.add_argument("--pause-grace", type=float, default=20.0,

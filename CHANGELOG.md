@@ -4,6 +4,21 @@ All notable changes to Underscore. Versions are pre-1.0 while the project
 stabilises; the patch number bumps with each meaningful change. Numbering starts
 from when the GUI work began (earlier CLI-only history is not versioned here).
 
+## 0.0.23
+- **Fixed the resume blip for real this time.** Players like Spotify snap their
+  own volume back to full the instant they receive Play, and that reset was
+  landing *after* our mute, leaking a fraction of a second of loud music before
+  the fade-in. Resume now holds the volume at 0 and re-writes it every ~10 ms
+  across a short window (`--resume-hold`, default 0.2 s), so whenever the player
+  resets, it's stomped straight back down — then the fade-in starts. Applies to
+  Forza pause-resume and both BeamNG resume paths.
+- **Garage car-swaps no longer pause the music.** Switching cars drops telemetry
+  for a packet or two while the physics engine reloads (a ~50 ms `IsRaceOn=0`
+  blip that read as PAUSED). The pause policy now waits for the pause to hold for
+  `--pause-confirm` seconds (default 0.7) before pausing, so those reload blips
+  are ignored while genuine pauses still pause. A real pause now stops the music
+  ~0.7 s in, which is imperceptible in a menu.
+
 ## 0.0.22
 - **Idle-duck for Forza (parked / garage).** When the car sits still during
   gameplay — in the garage, or stopped anywhere — Underscore now ducks the music
