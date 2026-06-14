@@ -100,7 +100,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-__version__ = "0.0.21"
+__version__ = "0.0.22"
 
 SINK_NAME = "underscore_game"
 SAMPLE_RATE = 16000
@@ -110,6 +110,9 @@ STATE_FILE = "/tmp/underscore.loopback.pid"
 
 OFF_IS_RACE_ON = 0            # int32
 OFF_ENGINE_MAX = 8           # float; 0.0 when no car/session loaded
+OFF_SPEED_FH6 = 256          # float Speed(m/s); FH6 default. Title-specific —
+                             # FH6 inserts 3 fields vs Forza Motorsport, so other
+                             # titles differ. Configurable via Config.speed_offset.
 MIN_PACKET = 12
 
 # BeamNG OutGauge (media-sync mode): a 96-byte packet on a UDP port. Pausing the
@@ -147,6 +150,10 @@ class Config:
     no_telemetry: bool = False        # disable the state machine
     game: str = "auto"                # auto | forza | beamng
     beamng_port: int = 4444           # BeamNG OutGauge UDP port
+    idle_duck: bool = False           # Forza: duck when stopped (garage / parked)
+    idle_grace: float = 4.0           # seconds stationary before idle-duck kicks in
+    idle_speed: float = 1.0           # m/s at or below which the car counts as stopped
+    speed_offset: int = OFF_SPEED_FH6 # Forza Speed(m/s) field offset (FH6 = 256)
 
 
 def config_path() -> Path:
@@ -755,8 +762,11 @@ class StateTracker:
 
 class TelemetryClassifier:
     def __init__(self, port: int, pause_grace: float = 10.0,
-                 escalate: bool = True, timeout: float = 2.0):
+                 escalate: bool = True, timeout: float = 2.0,
+                 speed_offset: int = OFF_SPEED_FH6):
         self.state = NO_SIGNAL
+        self.speed = None            # m/s, or None when no signal / packet too short
+        self._speed_off = speed_offset
         self._port, self._timeout = port, timeout
         self._tracker = StateTracker(pause_grace, escalate)
         self._running = True
@@ -781,12 +791,19 @@ class TelemetryClassifier:
                 data, _ = sock.recvfrom(2048)
             except socket.timeout:
                 self.state = NO_SIGNAL
+                self.speed = None
                 self._tracker.reset()
                 continue
             if len(data) < MIN_PACKET:
                 continue
             iro = struct.unpack_from("<i", data, OFF_IS_RACE_ON)[0]
             emax = struct.unpack_from("<f", data, OFF_ENGINE_MAX)[0]
+            off = self._speed_off
+            if iro and len(data) >= off + 4:
+                self.speed = struct.unpack_from("<f", data, off)[0]
+            else:
+                # paused/menu packets zero the payload — treat as no reading
+                self.speed = None
             self.state = self._tracker.update(iro, emax, time.monotonic())
 
 
@@ -1238,13 +1255,15 @@ class Engine:
         if not (have("pw-record") or have("parec")):
             return "No capture tool (pw-record or parec). Install pipewire."
 
-        use_tele = (not cfg.no_telemetry) and cfg.menu_policy in ("always", "pause")
+        use_tele = ((not cfg.no_telemetry)
+                    and (cfg.menu_policy in ("always", "pause") or cfg.idle_duck))
         if cfg.menu_policy == "pause" and not use_tele:
             return "menu-policy 'pause' requires telemetry (don't disable it)."
 
         self._fader = Fader(vol.set, cfg.attack, cfg.release, self._base)
         escalate = cfg.menu_policy != "pause"
-        self._tele = (TelemetryClassifier(cfg.port, cfg.pause_grace, escalate)
+        self._tele = (TelemetryClassifier(cfg.port, cfg.pause_grace, escalate,
+                                          speed_offset=cfg.speed_offset)
                       if use_tele else None)
 
         self._vad = SileroVAD(model_path)
@@ -1390,6 +1409,7 @@ class Engine:
         last_speech = 0.0
         last_state = None
         cmd = base
+        idle_since = None          # monotonic time the car first went stationary
         self._music_paused = False
 
         while not self._stop.is_set():
@@ -1415,6 +1435,19 @@ class Engine:
                     speech = False
 
             state = tele.state if tele else GAMEPLAY
+
+            # Idle-duck: in Forza gameplay, a sustained near-zero Speed means we're
+            # parked or in the garage — duck the music until the car moves again.
+            idle_active = False
+            spd = tele.speed if tele else None
+            if cfg.idle_duck and state == GAMEPLAY and spd is not None \
+                    and spd <= cfg.idle_speed:
+                if idle_since is None:
+                    idle_since = now
+                if (now - idle_since) >= cfg.idle_grace:
+                    idle_active = True
+            else:
+                idle_since = None
 
             if self._override:
                 # ducking suspended on the fly — keep music at base and playing
@@ -1454,14 +1487,15 @@ class Engine:
                     continue
 
             if cfg.menu_policy in ("speech", "pause"):
-                ducking = speech
+                ducking = speech or idle_active
                 menu_duck = False
             elif cfg.menu_policy == "always":
                 menu_duck = (state == MENU)
-                ducking = menu_duck or (state in (GAMEPLAY, NO_SIGNAL) and speech)
+                ducking = menu_duck or idle_active or \
+                    (state in (GAMEPLAY, NO_SIGNAL) and speech)
             else:
                 menu_duck = False
-                ducking = state in (GAMEPLAY, NO_SIGNAL) and speech
+                ducking = idle_active or (state in (GAMEPLAY, NO_SIGNAL) and speech)
 
             if not ducking:
                 target = base
@@ -1494,7 +1528,9 @@ def config_from_args(args: argparse.Namespace) -> Config:
         release=args.release, resume_fade=args.resume_fade,
         hangover=args.hangover, pause_grace=args.pause_grace,
         port=args.port, no_telemetry=args.no_telemetry,
-        game=args.game, beamng_port=args.beamng_port)
+        game=args.game, beamng_port=args.beamng_port,
+        idle_duck=args.idle_duck, idle_grace=args.idle_grace,
+        idle_speed=args.idle_speed, speed_offset=args.speed_offset)
 
 
 def _pidfile_path() -> str:
@@ -1641,6 +1677,15 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Game mode (auto-detects BeamNG OutGauge vs Forza)")
     r.add_argument("--beamng-port", type=int, default=4444,
                    help="BeamNG OutGauge UDP port (media-sync mode)")
+    r.add_argument("--idle-duck", action="store_true",
+                   help="Forza: duck the music when parked/in the garage "
+                        "(sustained near-zero speed)")
+    r.add_argument("--idle-grace", type=float, default=4.0,
+                   help="Seconds stationary before idle-duck engages (default 4)")
+    r.add_argument("--idle-speed", type=float, default=1.0,
+                   help="Speed (m/s) at or below which the car counts as stopped")
+    r.add_argument("--speed-offset", type=int, default=OFF_SPEED_FH6,
+                   help="Forza Speed(m/s) byte offset (FH6=256; title-specific)")
 
     d = sub.add_parser("diag", help="Print live telemetry state (find pause behaviour)")
     d.add_argument("--port", type=int, default=5335, help="Forza Data Out UDP port")

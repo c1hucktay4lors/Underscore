@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QPushButton, QLabel, QComboBox,
     QSlider, QGroupBox, QFormLayout, QVBoxLayout, QHBoxLayout, QGridLayout,
     QProgressBar, QPlainTextEdit, QMessageBox, QSystemTrayIcon, QMenu,
-    QTabWidget, QTextBrowser,
+    QTabWidget, QTextBrowser, QCheckBox,
 )
 
 from underscore import (
@@ -222,6 +222,10 @@ class MainWindow(QMainWindow):
         f_duck.addRow("Attack", self.sld_attack)
         self.sld_release = FloatSlider(0.1, 3.0, 0.1, "{:.1f}", " s")
         f_duck.addRow("Release", self.sld_release)
+        self.chk_idle = QCheckBox("Duck when parked / in garage (Forza)")
+        f_duck.addRow(self.chk_idle)
+        self.sld_idle_grace = FloatSlider(1.0, 15.0, 0.5, "{:.1f}", " s")
+        f_duck.addRow("Idle Timeout", self.sld_idle_grace)
         slay.addWidget(g_duck)
 
         # detection
@@ -355,6 +359,8 @@ class MainWindow(QMainWindow):
         self.sld_thresh.setValue(c.threshold)
         self.sld_rthresh.setValue(c.release_threshold)
         self.sld_hang.setValue(c.hangover)
+        self.chk_idle.setChecked(c.idle_duck)
+        self.sld_idle_grace.setValue(c.idle_grace)
         self._sync_policy_enabled()
 
     def _widgets_to_cfg(self) -> Config:
@@ -370,6 +376,8 @@ class MainWindow(QMainWindow):
         base.threshold = round(self.sld_thresh.value(), 3)
         base.release_threshold = round(self.sld_rthresh.value(), 3)
         base.hangover = round(self.sld_hang.value(), 0)
+        base.idle_duck = self.chk_idle.isChecked()
+        base.idle_grace = round(self.sld_idle_grace.value(), 1)
         return base
 
     def _sync_policy_enabled(self, *_):

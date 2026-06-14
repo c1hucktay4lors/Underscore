@@ -4,6 +4,22 @@ All notable changes to Underscore. Versions are pre-1.0 while the project
 stabilises; the patch number bumps with each meaningful change. Numbering starts
 from when the GUI work began (earlier CLI-only history is not versioned here).
 
+## 0.0.22
+- **Idle-duck for Forza (parked / garage).** When the car sits still during
+  gameplay — in the garage, or stopped anywhere — Underscore now ducks the music
+  after a short timeout, then restores it the instant you move again. Telemetry
+  confirmed FH6 keeps the garage as live *gameplay* (engine revs, RPM responds),
+  with `Speed` the only thing that goes to zero, so that's the signal used.
+  Enable with `--idle-duck` (CLI) or the "Duck when parked / in garage" checkbox
+  (GUI). Pair it with `--menu-policy pause` for "duck when idle, pause when
+  paused".
+- **Configurable idle timing.** `--idle-grace` (default 4 s) sets how long the
+  car must be stationary before ducking; `--idle-speed` (default 1.0 m/s) is the
+  stopped threshold; `--speed-offset` (default 256, FH6) sets the `Speed` field
+  byte offset for other Forza titles. The GUI exposes an "Idle Timeout" slider.
+  A safeguard ignores the reading until a real packet provides it, so paused/menu
+  frames (which zero the payload) never trigger a false idle-duck.
+
 ## 0.0.21
 - **Fixed a volume blip on resume.** Coming back from a pause (Forza pause-policy
   or BeamNG driving-resume), some players (e.g. Spotify) jump back to their own
