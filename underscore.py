@@ -100,7 +100,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-__version__ = "0.0.20"
+__version__ = "0.0.21"
 
 SINK_NAME = "underscore_game"
 SAMPLE_RATE = 16000
@@ -1010,6 +1010,18 @@ def read_exact(stream, n: int) -> Optional[bytes]:
 
 
 # ── diag ───────────────────────────────────────────────────────────────────--
+def _parse_watch(specs):
+    """Parse --watch OFFSET:TYPE entries (e.g. '16:f') into (offset, fmt) pairs."""
+    out = []
+    for s in specs:
+        try:
+            off, fmt = s.split(":")
+            out.append((int(off), fmt))
+        except ValueError:
+            print(f"(ignoring bad --watch '{s}'; use OFFSET:TYPE like 16:f)")
+    return out
+
+
 def cmd_diag(args: argparse.Namespace) -> int:
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.settimeout(2.0)
@@ -1018,12 +1030,16 @@ def cmd_diag(args: argparse.Namespace) -> int:
     except OSError as e:
         print(f"Cannot bind UDP :{args.port} — {e}")
         return 1
+    watches = _parse_watch(getattr(args, "watch", []) or [])
     print(f"Listening on :{args.port}. Drive, then PAUSE and watch 'nz' (nonzero")
-    print("bytes in the packet) and 'pi' (offset 220). A menu/loading screen is")
-    print("~3 nz bytes with pi=0. If during a PAUSE nz jumps well above 3 or pi")
-    print("stays nonzero, we have a deterministic pause signal — send me the log.")
+    print("bytes in the packet), 'pi' (offset 220) and 'len' (packet size). A menu/")
+    print("loading screen is ~3 nz bytes with pi=0. If during a PAUSE nz jumps well")
+    print("above 3 or pi stays nonzero, that's a deterministic pause signal.")
+    if watches:
+        print("Extra --watch fields appended at the end of each row.")
     print("STATE shows what the grace-period heuristic decides in the meantime.\n")
-    print(f"{'time':>8}  {'STATE':<9}{'race_on':>8}{'engine_max':>11}{'nz':>5}{'pi':>6}{'pkt/s':>7}")
+    print(f"{'time':>8}  {'STATE':<9}{'race_on':>8}{'engine_max':>11}"
+          f"{'len':>5}{'nz':>5}{'pi':>6}{'pkt/s':>7}")
     tracker = StateTracker(args.pause_grace)
     count = 0
     last_report = time.monotonic()
@@ -1032,7 +1048,8 @@ def cmd_diag(args: argparse.Namespace) -> int:
             data, _ = sock.recvfrom(2048)
         except socket.timeout:
             tracker.reset()
-            print(f"{time.strftime('%H:%M:%S'):>8}  {NO_SIGNAL:<9}{'-':>8}{'-':>11}{'-':>5}{'-':>6}{0.0:>7.1f}")
+            print(f"{time.strftime('%H:%M:%S'):>8}  {NO_SIGNAL:<9}{'-':>8}{'-':>11}"
+                  f"{'-':>5}{'-':>5}{'-':>6}{0.0:>7.1f}")
             continue
         if len(data) < MIN_PACKET:
             continue
@@ -1047,8 +1064,16 @@ def cmd_diag(args: argparse.Namespace) -> int:
             last_report = now
             nz = sum(1 for b in data if b != 0)
             pi = struct.unpack_from("<i", data, 220)[0] if len(data) >= 224 else 0
+            extra = ""
+            for off, fmt in watches:
+                try:
+                    v = struct.unpack_from("<" + fmt, data, off)[0]
+                    extra += (f"  {off}{fmt}={v:.1f}" if fmt in "fd"
+                              else f"  {off}{fmt}={v}")
+                except struct.error:
+                    extra += f"  {off}{fmt}=?"
             print(f"{time.strftime('%H:%M:%S'):>8}  {state:<9}"
-                  f"{iro:>8}{emax:>11.0f}{nz:>5}{pi:>6}{rate:>7.1f}")
+                  f"{iro:>8}{emax:>11.0f}{len(data):>5}{nz:>5}{pi:>6}{rate:>7.1f}{extra}")
 
 
 # ── run ──────────────────────────────────────────────────────────────────────-
@@ -1321,7 +1346,8 @@ class Engine:
             if self._override:                          # override = always play
                 if self._music_paused:
                     vol.play()
-                    fader.fade_to(base, cfg.resume_fade)
+                    fader.snap(0.0)                      # slam to 0 the instant we
+                    fader.fade_to(base, cfg.resume_fade) # resume, then ramp up
                     self._music_paused = False
                     self.status["paused"] = False
                     self._emit()
@@ -1334,7 +1360,8 @@ class Engine:
                 if self._music_paused:
                     logging.info("driving — resuming music")
                     vol.play()
-                    fader.fade_to(base, cfg.resume_fade)
+                    fader.snap(0.0)                      # slam to 0 the instant we
+                    fader.fade_to(base, cfg.resume_fade) # resume, then ramp up
                     self._music_paused = False
                     self.status["paused"] = False
                     self._emit()
@@ -1416,7 +1443,8 @@ class Engine:
                 elif not want_pause and self._music_paused:
                     logging.info("resuming playback (fade-in %.1fs)", cfg.resume_fade)
                     vol.play()
-                    fader.fade_to(base, cfg.resume_fade)
+                    fader.snap(0.0)                      # slam to 0 the instant we
+                    fader.fade_to(base, cfg.resume_fade) # resume, then ramp up
                     cmd = base
                     self._music_paused = False
                     self.status["paused"] = False
@@ -1618,6 +1646,9 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--port", type=int, default=5335, help="Forza Data Out UDP port")
     d.add_argument("--pause-grace", type=float, default=10.0,
                    help="Grace window used for the STATE column (s)")
+    d.add_argument("--watch", action="append", default=[], metavar="OFF:TYPE",
+                   help="Also decode a byte offset each tick, e.g. --watch 16:f "
+                        "(types: f d i I h H b B q Q). Repeatable; works on any --port.")
     return p
 
 

@@ -4,6 +4,17 @@ All notable changes to Underscore. Versions are pre-1.0 while the project
 stabilises; the patch number bumps with each meaningful change. Numbering starts
 from when the GUI work began (earlier CLI-only history is not versioned here).
 
+## 0.0.21
+- **Fixed a volume blip on resume.** Coming back from a pause (Forza pause-policy
+  or BeamNG driving-resume), some players (e.g. Spotify) jump back to their own
+  volume the instant they receive Play, so a fraction of a second of full-volume
+  music leaked through before the fade-in started. Resume now slams the volume to
+  0 synchronously the instant playback resumes, *then* ramps up — no more blip.
+- **More verbose `diag`.** Added a packet-length (`len`) column and a repeatable
+  `--watch OFFSET:TYPE` flag (e.g. `--watch 16:f`) that decodes any byte offset
+  live — handy for checking fields without code changes, and it works on any
+  `--port` (including BeamNG's OutGauge on 4444).
+
 ## 0.0.20
 - **BeamNG.drive media-sync mode.** Underscore now auto-detects BeamNG's OutGauge
   telemetry (a 96-byte UDP packet, vs Forza's ~324) and switches to a telemetry-only
@@ -15,6 +26,10 @@ from when the GUI work began (earlier CLI-only history is not versioned here).
   "Keep music playing". Enable OutGauge in BeamNG → `127.0.0.1:4444`. Manual override
   via `--game {auto,forza,beamng}` / `--beamng-port`. (Ignition/accessory awareness
   stays parked for the Lua mod; this is the mod-free path.)
+- **Packaging:** PKGBUILD reworked to the verifiable AUR form — code from a pinned
+  release tarball (`sha256sums` via `updpkgsums`), the Silero model still pinned to
+  its upstream hash, plus documented GPG-signing support — so the sources can be
+  integrity-checked instead of `SKIP`ed.
 
 ## 0.0.19
 - **GUI guide tab.** The window is now split into two tabs: **Ducker** (the
