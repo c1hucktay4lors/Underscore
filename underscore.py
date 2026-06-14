@@ -100,7 +100,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-__version__ = "0.0.23"
+__version__ = "0.0.24"
 
 SINK_NAME = "underscore_game"
 SAMPLE_RATE = 16000
@@ -461,6 +461,77 @@ def make_volume_backend(kind: str, player: str, match: str) -> VolumeBackend:
     if have("pactl"):
         return PactlBackend(match)
     return MPRISBackend(player)        # surface a clear error later
+
+
+class StreamGate:
+    """Best-effort *instant* mute of the music app's PipeWire stream, used only
+    to gate the resume 'slam'. MPRIS Volume can't silence the audio Spotify emits
+    the instant it receives Play (it restores its own volume and flushes buffered
+    audio before any Volume write lands), so we mute the stream at the graph level
+    instead — server-enforced and immediate. Tries pactl first (sink-input mute),
+    then wpctl (node mute). No-op if neither can find the stream, in which case
+    resume falls back to the old MPRIS-only behaviour."""
+    def __init__(self, match: str):
+        self._match = match
+        self._pa = PactlBackend(match) if have("pactl") else None
+        self._wp = have("wpctl") and have("pw-dump")
+        self._wp_id: Optional[str] = None
+
+    def available(self) -> bool:
+        return self._pa is not None or self._wp
+
+    def _wp_find(self) -> Optional[str]:
+        # Match the music app among PipeWire stream nodes via pw-dump JSON.
+        try:
+            import json
+            out = _run(["pw-dump"]).stdout
+            rx = re.compile(self._match, re.IGNORECASE)
+            for node in json.loads(out):
+                if node.get("type") != "PipeWire:Interface:Node":
+                    continue
+                props = (node.get("info") or {}).get("props") or {}
+                if props.get("media.class") != "Stream/Output/Audio":
+                    continue
+                label = " ".join(str(props.get(k, "")) for k in
+                                  ("application.name", "media.name",
+                                   "application.process.binary", "node.name"))
+                if rx.search(label):
+                    return str(node.get("id"))
+        except Exception:
+            pass
+        return None
+
+    def mute(self) -> bool:
+        """Mute the stream now. Returns True if a mute was actually applied."""
+        if self._pa is not None:
+            try:
+                if self._pa.present() and self._pa._index:
+                    r = _run(["pactl", "set-sink-input-mute", self._pa._index, "1"])
+                    if r.returncode == 0:
+                        return True
+            except Exception:
+                pass
+        if self._wp:
+            self._wp_id = self._wp_find()
+            if self._wp_id:
+                try:
+                    r = _run(["wpctl", "set-mute", self._wp_id, "1"])
+                    return r.returncode == 0
+                except Exception:
+                    pass
+        return False
+
+    def unmute(self) -> None:
+        if self._pa is not None and self._pa._index:
+            try:
+                _run(["pactl", "set-sink-input-mute", self._pa._index, "0"])
+            except Exception:
+                pass
+        if self._wp and self._wp_id:
+            try:
+                _run(["wpctl", "set-mute", self._wp_id, "0"])
+            except Exception:
+                pass
 
 
 # ── players / sources discovery ──────────────────────────────────────────────-
@@ -1223,6 +1294,7 @@ class Engine:
         self._base = 1.0
         self._music_paused = False
         self._override = False
+        self._gate = None
         self._clean_lock = threading.Lock()
 
     # -- lifecycle -------------------------------------------------------------
@@ -1242,6 +1314,8 @@ class Engine:
                     f"player; check names with the players command.")
         self._vol = vol
         self._base = vol.get()
+        # Instant PipeWire-level mute used to kill the resume slam (see StreamGate).
+        self._gate = StreamGate(cfg.music_match)
 
         # ── BeamNG media-sync mode (telemetry only — no VAD, no capture) ──
         if cfg.game in ("auto", "beamng"):
@@ -1389,6 +1463,21 @@ class Engine:
             self._emit()
 
     # -- the loops -------------------------------------------------------------
+    def _do_resume(self) -> None:
+        """Resume the music without the slam. MPRIS volume can't gate the audio
+        Spotify emits the instant it gets Play, so we mute the stream at the
+        PipeWire level first (instant, server-enforced), send Play, start the
+        fade, then unmute once the fade has begun — by which point the player's
+        own volume reset has settled and the fader is back in control."""
+        cfg = self.cfg
+        gated = self._gate.mute() if self._gate else False
+        self._vol.play()
+        self._fader.resume(self._base, cfg.resume_fade, cfg.resume_hold)
+        if gated:
+            t = threading.Timer(max(cfg.resume_hold, 0.05), self._gate.unmute)
+            t.daemon = True
+            t.start()
+
     def _run_beamng(self) -> None:
         """Media-sync loop: pause the music when you're not driving (sim paused,
         on-foot, or engine off), resume it when you are. No audio is captured."""
@@ -1405,8 +1494,7 @@ class Engine:
 
             if self._override:                          # override = always play
                 if self._music_paused:
-                    vol.play()
-                    fader.resume(base, cfg.resume_fade, cfg.resume_hold)
+                    self._do_resume()
                     self._music_paused = False
                     self.status["paused"] = False
                     self._emit()
@@ -1418,8 +1506,7 @@ class Engine:
                 not_driving_since = None
                 if self._music_paused:
                     logging.info("driving — resuming music")
-                    vol.play()
-                    fader.resume(base, cfg.resume_fade, cfg.resume_hold)
+                    self._do_resume()
                     self._music_paused = False
                     self.status["paused"] = False
                     self._emit()
@@ -1492,10 +1579,11 @@ class Engine:
             if self._override:
                 # ducking suspended on the fly — keep music at base and playing
                 if self._music_paused:
-                    vol.play()
+                    self._do_resume()
                     self._music_paused = False
                     self.status["paused"] = False
-                if cmd != base:
+                    cmd = base
+                elif cmd != base:
                     fader.set_target(base)
                     cmd = base
                 self._tick_status(state, False, prob)
@@ -1525,8 +1613,7 @@ class Engine:
                     self._emit()
                 elif not want_pause and self._music_paused:
                     logging.info("resuming playback (fade-in %.1fs)", cfg.resume_fade)
-                    vol.play()
-                    fader.resume(base, cfg.resume_fade, cfg.resume_hold)
+                    self._do_resume()
                     cmd = base
                     self._music_paused = False
                     self.status["paused"] = False

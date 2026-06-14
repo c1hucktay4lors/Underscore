@@ -4,6 +4,22 @@ All notable changes to Underscore. Versions are pre-1.0 while the project
 stabilises; the patch number bumps with each meaningful change. Numbering starts
 from when the GUI work began (earlier CLI-only history is not versioned here).
 
+## 0.0.24
+- **Actually killed the pause-resume blip.** The 0.0.23 fix wrote MPRIS volume 0
+  on resume, but that's the wrong lever: Spotify restores its *own* volume and
+  flushes buffered audio the instant it receives Play, before any MPRIS Volume
+  write can land — which is why turning `resume-hold` up to a full second changed
+  nothing, and why menu->gameplay (no Play) never blipped. Resume now mutes the
+  music stream at the **PipeWire graph level** (server-enforced, instant) for the
+  `resume-hold` window, sends Play, starts the fade, then unmutes — so the slam is
+  gated where Spotify can't override it. Uses pactl, falling back to wpctl; if
+  neither can find the stream it degrades to the old MPRIS-only behaviour. Applies
+  to every resume path (Forza pause, BeamNG driving-resume, override-resume).
+- **GUI: exposed the resume/pause timing controls.** The Ducking group now has
+  "Resume Hold" (mute window that kills the resume blip) and "Pause Confirm" (how
+  long a pause must hold before pausing — the garage car-swap filter) sliders,
+  matching the `--resume-hold` / `--pause-confirm` flags.
+
 ## 0.0.23
 - **Fixed the resume blip for real this time.** Players like Spotify snap their
   own volume back to full the instant they receive Play, and that reset was

@@ -21,7 +21,7 @@
 # ──────────────────────────────────────────────────────────────────────────────
 
 pkgname=underscore
-pkgver=0.0.23
+pkgver=0.0.24
 pkgrel=1
 pkgdesc="Audio-side dialogue ducker for Forza Horizon on Linux (also BeamNG media-sync)"
 arch=('any')
