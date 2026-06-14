@@ -2,22 +2,32 @@
 #
 # underscore — audio-side dialogue ducker for Forza Horizon (+ BeamNG media-sync).
 #
-# ── LOCAL / OFFLINE BUILD ─────────────────────────────────────────────────────
-# This PKGBUILD packages the files sitting next to it — it does NOT download
-# anything, so it always builds the exact working tree you have right now. Use it
-# to install/test the current version on your own machine. (The AUR-submission
-# form, which fetches a pinned release tarball with verified checksums, is kept
-# alongside as PKGBUILD.aur for when you publish.)
+# ── SOURCE INTEGRITY (read this) ──────────────────────────────────────────────
+# The AUR hosts only this PKGBUILD, not the code — makepkg downloads the source
+# itself. To make that verifiable, the source is a *pinned release tarball* and
+# `sha256sums` holds that tarball's hash; makepkg refuses to build on a mismatch,
+# so a tampered / MITM'd / silently re-cut release is caught. The Silero VAD model
+# is fetched from its canonical upstream and pinned to a real hash (below).
 #
-# Build & install from this directory (must contain underscore.py,
-# underscore_gui.py, silero_vad.onnx, underscore.svg, underscore.desktop,
-# underscore.install, LICENSE):
+# Before publishing each version, regenerate the tarball hash from the REAL
+# artifact — do not ship sha256sums=('SKIP') for the tarball (SKIP = "no
+# verification", which is exactly what reviewers flag):
 #
-#     makepkg -si            # build and install (pulls deps via pacman)
-#     makepkg -si --force    # rebuild after editing the source files
+#     git tag v$pkgver && git push --tags        # publish the release first
+#     updpkgsums                                 # fills sha256sums from the tarball
+#     makepkg -si                                # test the real build
+#     makepkg --printsrcinfo > .SRCINFO          # keep .SRCINFO in sync
 #
-# 'SKIP' checksums are correct here: the sources are your own local files, not
-# remote downloads, so there is nothing to verify against tampering.
+# CAVEAT: GitHub's auto-generated /archive/ tarballs are not guaranteed byte-
+# stable forever. For a hash that can never drift, build a tarball yourself,
+# upload it as a Release *asset*, and point source= at that asset URL.
+#
+# OPTIONAL — GPG-signed releases (strongest; survives a hijacked account/CDN).
+# Publish your key once and put its fingerprint in the README; sign each tarball
+# asset and upload the .sig, then uncomment:
+#     validpgpkeys=('YOUR_KEY_FINGERPRINT')
+#     source+=("$pkgname-$pkgver.tar.gz.sig::$url/releases/download/v$pkgver/$pkgname-$pkgver.tar.gz.sig")
+#     sha256sums+=('SKIP')   # the .sig is verified by GPG, not by a hash
 # ──────────────────────────────────────────────────────────────────────────────
 
 pkgname=underscore
@@ -28,12 +38,11 @@ arch=('any')
 url="https://github.com/c1hucktay4lors/underscore"
 license=('MIT')
 install='underscore.install'
-
 # 'python-onnxruntime' is a virtual name provided by several prebuilt packages
 # (python-onnxruntime-cpu / -cuda / -rocm …). Choose the -cpu provider when
-# prompted: the VAD runs on CPU with a tiny model, so GPU variants pull in
-# multi-GB toolkits for zero benefit. Depending on the virtual name (rather than
-# pinning -cpu) lets anyone who already has a cuda/rocm build keep it.
+# prompted: the VAD runs on CPU with a tiny model, so GPU variants add multi-GB
+# toolkits for zero benefit. Depending on the virtual name (not pinning -cpu)
+# lets anyone who already has a cuda/rocm build keep it without a conflict.
 depends=(
   'python'
   'python-numpy'
@@ -49,35 +58,30 @@ optdepends=(
   'pipewire-pulse: PulseAudio-compatible capture fallback (parec)'
 )
 
-# Local files only — makepkg copies these from the build directory into $srcdir.
-# No URLs, so no network access and nothing to checksum.
+# Code comes from the pinned release tarball; the model from its canonical
+# upstream, pinned to the silero-vad v6.2.1 release (this exact ONNX is the
+# v5-interface model the code expects, so its checksum can never drift).
+_vadver=v6.2.1
 source=(
-  'underscore.py'
-  'underscore_gui.py'
-  'silero_vad.onnx'
-  'underscore.svg'
-  'underscore.desktop'
-  'LICENSE'
+  "$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz"
+  "silero_vad.onnx::https://github.com/snakers4/silero-vad/raw/${_vadver}/src/silero_vad/data/silero_vad.onnx"
 )
 sha256sums=(
-  'SKIP'   # underscore.py        (local file)
-  'SKIP'   # underscore_gui.py    (local file)
-  'SKIP'   # silero_vad.onnx      (local file)
-  'SKIP'   # underscore.svg       (local file)
-  'SKIP'   # underscore.desktop   (local file)
-  'SKIP'   # LICENSE              (local file)
+  'SKIP'   # <- tarball: replace via `updpkgsums` after tagging the release
+  '1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3'  # silero_vad.onnx v6.2.1
 )
 
 package() {
-  cd "$srcdir"
+  cd "$srcdir/$pkgname-$pkgver"
 
   # App code. find_vad_model() looks next to underscore.py; the GUI imports
   # underscore and Python adds the script's dir to sys.path, so /usr/share works.
   install -Dm644 underscore.py     "$pkgdir/usr/share/underscore/underscore.py"
   install -Dm644 underscore_gui.py "$pkgdir/usr/share/underscore/underscore_gui.py"
 
-  # Silero VAD model, alongside the code where find_vad_model() expects it.
-  install -Dm644 silero_vad.onnx   "$pkgdir/usr/share/underscore/silero_vad.onnx"
+  # The separately-downloaded, hash-pinned model (not the tarball's copy), so the
+  # installed model is verified against its canonical upstream checksum.
+  install -Dm644 "$srcdir/silero_vad.onnx" "$pkgdir/usr/share/underscore/silero_vad.onnx"
 
   # Icon: app dir (the GUI's run-from-source fallback) AND the hicolor theme (so
   # the .desktop's Icon=underscore and QIcon.fromTheme resolve). pacman's icon
