@@ -34,6 +34,7 @@ from underscore import (
 
 MENU_POLICIES = ["speech", "always", "never", "pause"]
 PAUSE_SCOPES = ["from-gameplay", "all-menus"]
+PAUSE_METHODS = ["mute", "transport"]
 
 
 # ── a float-valued slider with an inline value label ─────────────────────────-
@@ -166,6 +167,23 @@ class MainWindow(QMainWindow):
         meters.addWidget(self.bar_volume, 1, 1)
         root.addLayout(meters)
 
+        # duck-zones row — OUTSIDE the settings group so it stays live while the
+        # engine runs (marking a spot requires the engine running and in gameplay).
+        geo_row = QHBoxLayout()
+        self.btn_mark = QPushButton("Mark Current Spot")
+        self.btn_mark.setEnabled(False)
+        self.btn_mark.setToolTip("Record the car's current position as a duck-zone. "
+                                 "Engine must be running and in gameplay (e.g. sitting "
+                                 "in the garage).")
+        self.btn_mark.clicked.connect(self._mark_spot)
+        self.btn_clear_geo = QPushButton("Clear Zones")
+        self.btn_clear_geo.clicked.connect(self._clear_geofences)
+        self.lbl_geo = QLabel("0 saved")
+        geo_row.addWidget(self.btn_mark)
+        geo_row.addWidget(self.btn_clear_geo)
+        geo_row.addWidget(self.lbl_geo, 1)
+        root.addLayout(geo_row)
+
         # everything below is locked while running
         self.settings = QWidget()
         slay = QVBoxLayout(self.settings)
@@ -214,6 +232,9 @@ class MainWindow(QMainWindow):
         self.cmb_scope = QComboBox()
         self.cmb_scope.addItems(PAUSE_SCOPES)
         f_duck.addRow("Pause Scope", self.cmb_scope)
+        self.cmb_method = QComboBox()
+        self.cmb_method.addItems(PAUSE_METHODS)
+        f_duck.addRow("Pause Method", self.cmb_method)
         self.sld_idle = FloatSlider(0.0, 1.0, 0.01, "{:.0%}")
         f_duck.addRow("Duck Level", self.sld_idle)
         self.sld_resume = FloatSlider(0.0, 5.0, 0.1, "{:.1f}", " s")
@@ -230,6 +251,10 @@ class MainWindow(QMainWindow):
         f_duck.addRow(self.chk_idle)
         self.sld_idle_grace = FloatSlider(1.0, 15.0, 0.5, "{:.1f}", " s")
         f_duck.addRow("Idle Timeout", self.sld_idle_grace)
+        self.chk_geofence = QCheckBox("Duck inside saved spots / geofences (Forza)")
+        f_duck.addRow(self.chk_geofence)
+        self.sld_geofence_radius = FloatSlider(5.0, 100.0, 1.0, "{:.0f}", " u")
+        f_duck.addRow("Geofence Size", self.sld_geofence_radius)
         slay.addWidget(g_duck)
 
         # detection
@@ -356,6 +381,7 @@ class MainWindow(QMainWindow):
         self.cmb_monitor.setCurrentText(c.game_monitor)
         self.cmb_policy.setCurrentText(c.menu_policy)
         self.cmb_scope.setCurrentText(c.pause_scope)
+        self.cmb_method.setCurrentText(c.pause_method)
         self.sld_idle.setValue(c.idle)
         self.sld_resume.setValue(c.resume_fade)
         self.sld_resume_hold.setValue(c.resume_hold)
@@ -367,6 +393,9 @@ class MainWindow(QMainWindow):
         self.sld_hang.setValue(c.hangover)
         self.chk_idle.setChecked(c.idle_duck)
         self.sld_idle_grace.setValue(c.idle_grace)
+        self.chk_geofence.setChecked(c.geofence_duck)
+        self.sld_geofence_radius.setValue(c.geofence_radius)
+        self.lbl_geo.setText(f"{len(c.geofences)} saved")
         self._sync_policy_enabled()
 
     def _widgets_to_cfg(self) -> Config:
@@ -375,6 +404,7 @@ class MainWindow(QMainWindow):
         base.game_monitor = self.cmb_monitor.currentText().strip()
         base.menu_policy = self.cmb_policy.currentText()
         base.pause_scope = self.cmb_scope.currentText()
+        base.pause_method = self.cmb_method.currentText()
         base.idle = round(self.sld_idle.value(), 3)
         base.resume_fade = round(self.sld_resume.value(), 2)
         base.resume_hold = round(self.sld_resume_hold.value(), 2)
@@ -386,10 +416,16 @@ class MainWindow(QMainWindow):
         base.hangover = round(self.sld_hang.value(), 0)
         base.idle_duck = self.chk_idle.isChecked()
         base.idle_grace = round(self.sld_idle_grace.value(), 1)
+        base.geofence_duck = self.chk_geofence.isChecked()
+        base.geofence_radius = round(self.sld_geofence_radius.value(), 1)
         return base
 
     def _sync_policy_enabled(self, *_):
-        self.cmb_scope.setEnabled(self.cmb_policy.currentText() == "pause")
+        is_pause = self.cmb_policy.currentText() == "pause"
+        self.cmb_scope.setEnabled(is_pause)
+        self.cmb_method.setEnabled(is_pause)
+        self.sld_resume_hold.setEnabled(is_pause)
+        self.sld_pause_confirm.setEnabled(is_pause)
 
     # -- pickers --------------------------------------------------------------
     def _refresh_players(self):
@@ -462,6 +498,7 @@ class MainWindow(QMainWindow):
         self.btn_suspend.setEnabled(True)
         self.btn_suspend.setChecked(False)
         self.btn_suspend.setText(self._suspend_label(False))
+        self.btn_mark.setEnabled(True)
         self.lbl_state.setText("Running")
         try:
             with open(_pidfile_path(), "w") as f:      # so `underscore toggle` finds us
@@ -492,6 +529,7 @@ class MainWindow(QMainWindow):
         self.btn_suspend.setEnabled(False)
         self.btn_suspend.setChecked(False)
         self.btn_suspend.setText("Suspend ducking")
+        self.btn_mark.setEnabled(False)
         self.lbl_state.setText("Stopped")
         self.bar_speech.setValue(0)
         self.bar_volume.setValue(0)
@@ -502,6 +540,37 @@ class MainWindow(QMainWindow):
         self._append("Stopped — volume restored")
 
     # -- live updates ---------------------------------------------------------
+    def _mark_spot(self):
+        if not self.engine:
+            return
+        coord = self.engine.mark_geofence()
+        if coord is None:
+            QMessageBox.information(
+                self, "Mark spot",
+                "No position yet — be in gameplay (e.g. sitting in the garage) "
+                "first, then try again.")
+            return
+        self.lbl_geo.setText(f"{len(load_config().geofences)} saved")
+        self._append("Marked duck-zone at %.0f, %.0f, %.0f"
+                     % (coord[0], coord[1], coord[2]))
+
+    def _clear_geofences(self):
+        cfg = load_config()
+        n = len(cfg.geofences)
+        if n == 0:
+            self.lbl_geo.setText("0 saved")
+            return
+        if QMessageBox.question(self, "Clear duck-zones",
+                                f"Delete all {n} saved duck-zone(s)?") \
+                != QMessageBox.StandardButton.Yes:
+            return
+        cfg.geofences = []
+        save_config(cfg)
+        if self.engine:                      # clear the live list too
+            self.engine.cfg.geofences = []
+        self.lbl_geo.setText("0 saved")
+        self._append(f"Cleared {n} duck-zone(s)")
+
     def _toggle_override(self):
         if not self.engine:
             return

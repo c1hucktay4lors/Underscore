@@ -4,6 +4,28 @@ All notable changes to Underscore. Versions are pre-1.0 while the project
 stabilises; the patch number bumps with each meaningful change. Numbering starts
 from when the GUI work began (earlier CLI-only history is not versioned here).
 
+## 0.0.27
+- **Geofence duck-zones (Forza).** You can now mark a spot — sit in a garage and
+  hit "Mark Current Spot" (GUI) or run `underscore mark` — and the music ducks
+  whenever the car is parked inside that saved location, raising back up the
+  instant you drive out of it. Unlike idle-duck (which fires anywhere you stop),
+  this only triggers at *your* saved spots, so a stoplight on the open road
+  leaves the music alone. Built on the confirmed finding that Forza streams live
+  PositionX/Y/Z (offsets 244/248/252) even in the garage, snapping to a fixed
+  per-location coordinate.
+- **How it works.** Each saved spot is a centre point; "inside" means within a
+  per-axis box (default ±20 world units on x, y and z — `--geofence-radius` or
+  the "Geofence Size" slider). The box is deliberately small: at ~20 units the
+  car's drivable position sits outside it, so the moment you take control the
+  music comes back. A game pause still overrides everything (the music
+  pauses/mutes as usual). Enable with `--geofence-duck` or the "Duck inside saved
+  spots" checkbox.
+- **Managing zones.** `underscore mark` records the current spot in a running
+  instance (over SIGUSR2, like `toggle`); `underscore mark --clear` or the GUI
+  "Clear Zones" button wipes them. Saved zones persist in config.toml and are
+  per-save / per-map (the coordinates only mean anything on the map they were
+  recorded on). Position offset is `--pos-offset` (244 for FH6) for other titles.
+
 ## 0.0.26
 - **Transport-mode pausing now works for Flatpak Spotify too.** The previous
   build could only pin a stream that carried identity on its own PipeWire node;

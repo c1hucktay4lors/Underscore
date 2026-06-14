@@ -95,12 +95,12 @@ import subprocess
 import sys
 import threading
 import time
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Callable, Optional
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-__version__ = "0.0.26"
+__version__ = "0.0.27"
 
 SINK_NAME = "underscore_game"
 SAMPLE_RATE = 16000
@@ -113,6 +113,8 @@ OFF_ENGINE_MAX = 8           # float; 0.0 when no car/session loaded
 OFF_SPEED_FH6 = 256          # float Speed(m/s); FH6 default. Title-specific —
                              # FH6 inserts 3 fields vs Forza Motorsport, so other
                              # titles differ. Configurable via Config.speed_offset.
+OFF_POS_FH6 = 244            # float PositionX; Y=+4, Z=+8 (world-space metres, FH6).
+                             # Zeroed when paused; fixed per-location in the garage.
 MIN_PACKET = 12
 
 # BeamNG OutGauge (media-sync mode): a 96-byte packet on a UDP port. Pausing the
@@ -157,6 +159,10 @@ class Config:
     idle_grace: float = 4.0           # seconds stationary before idle-duck kicks in
     idle_speed: float = 1.0           # m/s at or below which the car counts as stopped
     speed_offset: int = OFF_SPEED_FH6 # Forza Speed(m/s) field offset (FH6 = 256)
+    geofence_duck: bool = False       # Forza: duck while parked inside a saved spot
+    geofence_radius: float = 20.0     # half-size of the per-axis box around each spot
+    pos_offset: int = OFF_POS_FH6     # Forza PositionX offset (Y=+4, Z=+8; FH6 = 244)
+    geofences: list = field(default_factory=list)  # saved [x,y,z] duck-zone centres
 
 
 def config_path() -> Path:
@@ -188,10 +194,28 @@ def save_config(cfg: Config) -> None:
             val = "true" if v else "false"
         elif isinstance(v, (int, float)):
             val = repr(v)
+        elif isinstance(v, list):
+            # list of [x,y,z] float triples → TOML array of arrays
+            rows = ", ".join("[" + ", ".join(repr(float(c)) for c in row) + "]"
+                             for row in v)
+            val = "[" + rows + "]"
         else:
             val = '"' + str(v).replace("\\", "\\\\").replace('"', '\\"') + '"'
         lines.append(f"{k} = {val}")
     p.write_text("\n".join(lines) + "\n")
+
+
+def _in_geofence(pos, centers, radius) -> bool:
+    """True if pos is within the per-axis box (±radius on x, y and z) of any saved
+    centre. A box (not a sphere) because the user thinks in 'units on each axis'."""
+    if pos is None:
+        return False
+    x, y, z = pos
+    for c in centers:
+        if (abs(x - c[0]) <= radius and abs(y - c[1]) <= radius
+                and abs(z - c[2]) <= radius):
+            return True
+    return False
 
 
 def have(binary: str) -> bool:
@@ -918,10 +942,13 @@ class StateTracker:
 class TelemetryClassifier:
     def __init__(self, port: int, pause_grace: float = 10.0,
                  escalate: bool = True, timeout: float = 2.0,
-                 speed_offset: int = OFF_SPEED_FH6):
+                 speed_offset: int = OFF_SPEED_FH6,
+                 pos_offset: int = OFF_POS_FH6):
         self.state = NO_SIGNAL
         self.speed = None            # m/s, or None when no signal / packet too short
+        self.position = None         # (x, y, z) metres, or None
         self._speed_off = speed_offset
+        self._pos_off = pos_offset
         self._port, self._timeout = port, timeout
         self._tracker = StateTracker(pause_grace, escalate)
         self._running = True
@@ -947,6 +974,7 @@ class TelemetryClassifier:
             except socket.timeout:
                 self.state = NO_SIGNAL
                 self.speed = None
+                self.position = None
                 self._tracker.reset()
                 continue
             if len(data) < MIN_PACKET:
@@ -959,6 +987,11 @@ class TelemetryClassifier:
             else:
                 # paused/menu packets zero the payload — treat as no reading
                 self.speed = None
+            poff = self._pos_off
+            if iro and len(data) >= poff + 12:
+                self.position = struct.unpack_from("<fff", data, poff)
+            else:
+                self.position = None
             self.state = self._tracker.update(iro, emax, time.monotonic())
 
 
@@ -1377,6 +1410,7 @@ class Engine:
         self._music_paused = False
         self._override = False
         self._gate = None
+        self._last_pos = None        # most recent (x,y,z) for geofence marking
         self._clean_lock = threading.Lock()
 
     # -- lifecycle -------------------------------------------------------------
@@ -1456,14 +1490,16 @@ class Engine:
             return "No capture tool (pw-record or parec). Install pipewire."
 
         use_tele = ((not cfg.no_telemetry)
-                    and (cfg.menu_policy in ("always", "pause") or cfg.idle_duck))
+                    and (cfg.menu_policy in ("always", "pause")
+                         or cfg.idle_duck or cfg.geofence_duck))
         if cfg.menu_policy == "pause" and not use_tele:
             return "menu-policy 'pause' requires telemetry (don't disable it)."
 
         self._fader = Fader(vol.set, cfg.attack, cfg.release, self._base)
         escalate = cfg.menu_policy != "pause"
         self._tele = (TelemetryClassifier(cfg.port, cfg.pause_grace, escalate,
-                                          speed_offset=cfg.speed_offset)
+                                          speed_offset=cfg.speed_offset,
+                                          pos_offset=cfg.pos_offset)
                       if use_tele else None)
 
         self._vad = SileroVAD(model_path)
@@ -1548,6 +1584,26 @@ class Engine:
             self._emit()
 
     # -- the loops -------------------------------------------------------------
+    def mark_geofence(self):
+        """Snap the car's current world position into the saved duck-zone list and
+        persist it. Returns the (x,y,z) recorded, or None if no position is known
+        yet (not in gameplay, or telemetry hasn't delivered a position)."""
+        pos = self._last_pos
+        if pos is None:
+            return None
+        coord = [round(float(pos[0]), 1), round(float(pos[1]), 1),
+                 round(float(pos[2]), 1)]
+        self.cfg.geofences.append(coord)
+        try:
+            save_config(self.cfg)
+        except Exception as e:
+            logging.warning("could not persist geofence: %s", e)
+        logging.info("marked duck-zone at %s (now %d saved)",
+                     coord, len(self.cfg.geofences))
+        _notify("Underscore: duck-zone marked",
+                f"{coord[0]:.0f}, {coord[1]:.0f}, {coord[2]:.0f}")
+        return coord
+
     def _do_pause(self) -> None:
         """Silence the music for a game pause. In 'mute' mode we DON'T send the
         player a transport Pause — we just drop the volume to 0 and leave the
@@ -1660,6 +1716,8 @@ class Engine:
                     speech = False
 
             state = tele.state if tele else GAMEPLAY
+            if tele is not None and tele.position is not None:
+                self._last_pos = tele.position
 
             # Idle-duck: in Forza gameplay, a sustained near-zero Speed means we're
             # parked or in the garage — duck the music until the car moves again.
@@ -1673,6 +1731,13 @@ class Engine:
                     idle_active = True
             else:
                 idle_since = None
+
+            # Geofence-duck: stay ducked while parked inside a saved duck-zone
+            # (e.g. a garage); un-duck the moment we drive out of the box.
+            geofence_active = (cfg.geofence_duck and state == GAMEPLAY
+                               and cfg.geofences
+                               and _in_geofence(tele.position if tele else None,
+                                                cfg.geofences, cfg.geofence_radius))
 
             if self._override:
                 # ducking suspended on the fly — keep music at base and playing
@@ -1720,15 +1785,16 @@ class Engine:
                     continue
 
             if cfg.menu_policy in ("speech", "pause"):
-                ducking = speech or idle_active
+                ducking = speech or idle_active or geofence_active
                 menu_duck = False
             elif cfg.menu_policy == "always":
                 menu_duck = (state == MENU)
-                ducking = menu_duck or idle_active or \
+                ducking = menu_duck or idle_active or geofence_active or \
                     (state in (GAMEPLAY, NO_SIGNAL) and speech)
             else:
                 menu_duck = False
-                ducking = idle_active or (state in (GAMEPLAY, NO_SIGNAL) and speech)
+                ducking = idle_active or geofence_active or \
+                    (state in (GAMEPLAY, NO_SIGNAL) and speech)
 
             if not ducking:
                 target = base
@@ -1752,6 +1818,8 @@ class Engine:
 
 
 def config_from_args(args: argparse.Namespace) -> Config:
+    # Geofences are only ever set via `mark`/GUI and persisted; carry them across.
+    saved_fences = load_config().geofences
     return Config(
         player=args.player, volume_backend=args.volume_backend,
         music_match=args.music_match, game_monitor=(args.game_monitor or ""),
@@ -1765,7 +1833,9 @@ def config_from_args(args: argparse.Namespace) -> Config:
         port=args.port, no_telemetry=args.no_telemetry,
         game=args.game, beamng_port=args.beamng_port,
         idle_duck=args.idle_duck, idle_grace=args.idle_grace,
-        idle_speed=args.idle_speed, speed_offset=args.speed_offset)
+        idle_speed=args.idle_speed, speed_offset=args.speed_offset,
+        geofence_duck=args.geofence_duck, geofence_radius=args.geofence_radius,
+        pos_offset=args.pos_offset, geofences=saved_fences)
 
 
 def _pidfile_path() -> str:
@@ -1793,21 +1863,29 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     stop = threading.Event()
     toggle = threading.Event()
+    mark = threading.Event()
     prev_term = signal.getsignal(signal.SIGTERM)
     prev_usr1 = signal.getsignal(signal.SIGUSR1)
+    prev_usr2 = signal.getsignal(signal.SIGUSR2)
     signal.signal(signal.SIGTERM, lambda *_: stop.set())     # systemctl stop, etc.
     signal.signal(signal.SIGUSR1, lambda *_: toggle.set())   # the override keypress
+    signal.signal(signal.SIGUSR2, lambda *_: mark.set())     # `underscore mark`
     try:
         while eng.status["running"] and not stop.is_set():
             if toggle.is_set():
                 toggle.clear()
                 eng.toggle_override()
+            if mark.is_set():
+                mark.clear()
+                if eng.mark_geofence() is None:
+                    logging.info("mark: no position yet (be in gameplay first)")
             time.sleep(0.2)
     except KeyboardInterrupt:
         pass
     finally:
         signal.signal(signal.SIGTERM, prev_term)
         signal.signal(signal.SIGUSR1, prev_usr1)
+        signal.signal(signal.SIGUSR2, prev_usr2)
         if pidpath:
             try:
                 os.remove(pidpath)
@@ -1840,6 +1918,35 @@ def cmd_toggle(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_mark(args: argparse.Namespace) -> int:
+    """Record the car's current position as a duck-zone in a running Underscore
+    (sit in the garage, then run `underscore mark`). `--clear` wipes saved zones."""
+    if args.clear:
+        cfg = load_config()
+        n = len(cfg.geofences)
+        cfg.geofences = []
+        save_config(cfg)
+        print(f"Cleared {n} saved duck-zone(s). Restart the engine to apply.")
+        return 0
+    pidpath = _pidfile_path()
+    try:
+        with open(pidpath) as f:
+            pid = int(f.read().strip())
+    except (OSError, ValueError):
+        print("No running Underscore found. Start `underscore run` or the GUI first.")
+        return 1
+    try:
+        os.kill(pid, signal.SIGUSR2)
+    except ProcessLookupError:
+        print("Underscore isn't running (stale pidfile).")
+        return 1
+    except PermissionError:
+        print("Not permitted to signal the Underscore process.")
+        return 1
+    print("Marked current spot as a duck-zone (must be in gameplay).")
+    return 0
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
@@ -1859,6 +1966,10 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("teardown", help="Remove the virtual sink")
     sub.add_parser("toggle", help="Suspend/resume ducking in a running instance "
                                   "(bind a DE shortcut to this)")
+    mk = sub.add_parser("mark", help="Record the car's current spot as a duck-zone "
+                                     "in a running instance (sit in the garage first)")
+    mk.add_argument("--clear", action="store_true",
+                    help="Delete all saved duck-zones instead of adding one")
 
     r = sub.add_parser("run", help="Run the ducker")
     r.add_argument("--player", default="spotify",
@@ -1931,6 +2042,14 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Speed (m/s) at or below which the car counts as stopped")
     r.add_argument("--speed-offset", type=int, default=OFF_SPEED_FH6,
                    help="Forza Speed(m/s) byte offset (FH6=256; title-specific)")
+    r.add_argument("--geofence-duck", action="store_true",
+                   help="Forza: duck while parked inside a saved duck-zone "
+                        "(mark spots with `underscore mark`)")
+    r.add_argument("--geofence-radius", type=float, default=20.0,
+                   help="Half-size of the per-axis box around each duck-zone "
+                        "(world units; default 20)")
+    r.add_argument("--pos-offset", type=int, default=OFF_POS_FH6,
+                   help="Forza PositionX byte offset (Y=+4, Z=+8; FH6=244)")
 
     d = sub.add_parser("diag", help="Print live telemetry state (find pause behaviour)")
     d.add_argument("--port", type=int, default=5335, help="Forza Data Out UDP port")
@@ -1952,6 +2071,7 @@ def main() -> int:
         "players": cmd_players, "sources": cmd_sources,
         "setup": cmd_setup, "teardown": cmd_teardown,
         "run": cmd_run, "diag": cmd_diag, "toggle": cmd_toggle,
+        "mark": cmd_mark,
     }[args.cmd](args)
 
 
