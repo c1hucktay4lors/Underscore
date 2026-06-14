@@ -149,6 +149,42 @@ On KDE/GNOME: **Settings → Keyboard → Shortcuts → add a custom command** s
 
 ---
 
+## Ducking while parked (garage & saved spots)
+
+Forza keeps streaming telemetry even while you sit in the garage, so Underscore
+can lower the music when you're parked — handy for hearing engine-sound previews
+or just browsing menus. Two mechanisms, usable together or separately (Forza only;
+both read the car's telemetry):
+
+**Idle-duck** ducks whenever the car is stationary for a few seconds, *anywhere*.
+Turn on **Duck when parked / in garage** in the GUI, or `--idle-duck`. Tune how
+long it waits with `--idle-grace` (default 4 s) and what counts as stopped with
+`--idle-speed` (default 1.0 m/s). Simple, but it also dips the music if you stop
+at a light on the open road.
+
+**Geofence duck-zones** duck *only* at locations you've saved, so a road stop is
+left alone. Sit in a garage and record the spot, then enable the zones:
+
+- **GUI:** **Mark Current Spot** (in the header, live while running), and the
+  **Duck inside saved spots** checkbox. **Clear Zones** wipes them.
+- **CLI:** `underscore mark` records the current spot in a running instance;
+  `underscore mark --clear` removes all; run with `--geofence-duck`.
+
+A spot is a small box (default ±20 units on each axis, `--geofence-radius`) around
+the recorded coordinate. It's intentionally tight: once you take control of the car
+its position moves outside the box, so the music comes straight back up. Saved zones
+live in `config.toml` and are **per-save and per-map** — the coordinates only mean
+anything on the map they were recorded on, so re-mark if you switch maps. (For other
+Forza titles, set the position field offset with `--pos-offset`; FH6 is 244.)
+
+Inside a saved zone, **ducking takes priority over the pause policy**: a car swap
+briefly zeroes the telemetry, but Underscore stays "in" the zone and keeps the music
+ducked instead of pausing — so there's no pause/resume cycle and no resume blip while
+you change cars. If a pause lasts longer than `--geofence-pause-grace` (default 8 s),
+Underscore assumes you've left for a menu and normal pause behavior resumes.
+
+---
+
 ## Configuration
 
 Settings are saved to `~/.config/underscore/config.toml` and can be overridden per
@@ -160,8 +196,14 @@ run with CLI flags:
 | `--game-monitor NAME` | PipeWire monitor to capture |
 | `--volume-backend {auto,mpris,playerctl,pactl}` | How to control volume (default `auto`) |
 | `--menu-policy {speech,always,never,pause}` | Behavior in menus (default `speech`) |
+| `--pause-method {mute,transport}` | `pause` policy: `mute` = volume-only, no resume blip (track runs on); `transport` = real Pause/Play (track freezes) |
+| `--idle-duck` · `--idle-grace S` · `--idle-speed M` | Duck when parked anywhere (see above) |
+| `--geofence-duck` · `--geofence-radius U` · `--geofence-pause-grace S` | Duck only inside saved spots (see above) |
+| `--game {auto,forza,beamng}` | Telemetry source (auto-detects BeamNG OutGauge vs Forza Data Out) |
 | `--verbose` | Debug logging |
 | `--version` | Print version |
+
+Run `underscore run --help` for the full list (thresholds, fades, ports, offsets).
 
 ---
 

@@ -100,7 +100,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-__version__ = "0.0.27"
+__version__ = "0.0.28"
 
 SINK_NAME = "underscore_game"
 SAMPLE_RATE = 16000
@@ -161,6 +161,9 @@ class Config:
     speed_offset: int = OFF_SPEED_FH6 # Forza Speed(m/s) field offset (FH6 = 256)
     geofence_duck: bool = False       # Forza: duck while parked inside a saved spot
     geofence_radius: float = 20.0     # half-size of the per-axis box around each spot
+    geofence_pause_grace: float = 8.0 # keep ducking (not pausing) this long into a
+                                      # pause while in a zone — covers car swaps,
+                                      # then falls back to normal pause if you left
     pos_offset: int = OFF_POS_FH6     # Forza PositionX offset (Y=+4, Z=+8; FH6 = 244)
     geofences: list = field(default_factory=list)  # saved [x,y,z] duck-zone centres
 
@@ -1691,6 +1694,8 @@ class Engine:
         cmd = base
         idle_since = None          # monotonic time the car first went stationary
         pause_since = None         # monotonic time want_pause first became true
+        geo_sticky = False         # currently in (or just-paused inside) a duck-zone
+        geo_paused_since = None     # when telemetry zeroed while sticky
         self._music_paused = False
 
         while not self._stop.is_set():
@@ -1734,10 +1739,25 @@ class Engine:
 
             # Geofence-duck: stay ducked while parked inside a saved duck-zone
             # (e.g. a garage); un-duck the moment we drive out of the box.
-            geofence_active = (cfg.geofence_duck and state == GAMEPLAY
-                               and cfg.geofences
-                               and _in_geofence(tele.position if tele else None,
-                                                cfg.geofences, cfg.geofence_radius))
+            #
+            # Stickiness: a car swap briefly zeroes telemetry (a sub-second PAUSED
+            # blip), which would otherwise drop us out of the zone and un-duck (or,
+            # under the pause policy, pause the music). So once we're in a zone we
+            # STAY "in" it through a pause — keeping the music ducked, never pausing
+            # — until either we drive out (a gameplay frame outside the box) or the
+            # pause outlasts geofence_pause_grace (you've left to a menu).
+            in_box = (cfg.geofence_duck and cfg.geofences
+                      and _in_geofence(tele.position if tele else None,
+                                       cfg.geofences, cfg.geofence_radius))
+            if state == GAMEPLAY:
+                geo_sticky = bool(in_box)        # confirm or clear on live frames
+                geo_paused_since = None
+            elif geo_sticky:                     # telemetry zeroed but we were in a zone
+                if geo_paused_since is None:
+                    geo_paused_since = now
+                if (now - geo_paused_since) >= cfg.geofence_pause_grace:
+                    geo_sticky = False           # outlasted a swap → treat as left
+            geofence_active = geo_sticky
 
             if self._override:
                 # ducking suspended on the fly — keep music at base and playing
@@ -1752,7 +1772,7 @@ class Engine:
                 self._tick_status(state, False, prob)
                 continue
 
-            if cfg.menu_policy == "pause":
+            if cfg.menu_policy == "pause" and not geo_sticky:
                 if cfg.pause_scope == "from-gameplay":
                     want_pause = (state == PAUSED)
                 else:
@@ -1783,6 +1803,18 @@ class Engine:
                 if self._music_paused:
                     self._tick_status(state, False, prob)
                     continue
+            elif cfg.menu_policy == "pause" and geo_sticky:
+                # Inside a tagged location: ducking wins over the pause policy. A
+                # car swap's brief PAUSED keeps us ducked rather than pausing, so
+                # there's no pause/resume cycle (and no resume blip) here at all.
+                pause_since = None
+                if self._music_paused:           # had paused just before entering
+                    self._do_resume()
+                    cmd = base
+                    self._music_paused = False
+                    self.status["paused"] = False
+                    self._emit()
+                # fall through: geofence_active drives the duck below
 
             if cfg.menu_policy in ("speech", "pause"):
                 ducking = speech or idle_active or geofence_active
@@ -1835,6 +1867,7 @@ def config_from_args(args: argparse.Namespace) -> Config:
         idle_duck=args.idle_duck, idle_grace=args.idle_grace,
         idle_speed=args.idle_speed, speed_offset=args.speed_offset,
         geofence_duck=args.geofence_duck, geofence_radius=args.geofence_radius,
+        geofence_pause_grace=args.geofence_pause_grace,
         pos_offset=args.pos_offset, geofences=saved_fences)
 
 
@@ -2048,6 +2081,10 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--geofence-radius", type=float, default=20.0,
                    help="Half-size of the per-axis box around each duck-zone "
                         "(world units; default 20)")
+    r.add_argument("--geofence-pause-grace", type=float, default=8.0,
+                   help="Inside a zone, keep ducking (never pause) for this long "
+                        "into a pause — covers car swaps without a pause blip; "
+                        "after it, normal pause behaviour resumes (s, default 8)")
     r.add_argument("--pos-offset", type=int, default=OFF_POS_FH6,
                    help="Forza PositionX byte offset (Y=+4, Z=+8; FH6=244)")
 

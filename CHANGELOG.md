@@ -4,6 +4,21 @@ All notable changes to Underscore. Versions are pre-1.0 while the project
 stabilises; the patch number bumps with each meaningful change. Numbering starts
 from when the GUI work began (earlier CLI-only history is not versioned here).
 
+## 0.0.28
+- **Inside a duck-zone, ducking now beats the pause policy.** Previously a game
+  pause would override geofence ducking; now, while you're parked in a saved spot,
+  Underscore keeps the music ducked instead of pausing. The geofence state is
+  "sticky" — it survives the brief telemetry blackout when you swap cars, so a car
+  swap no longer triggers a pause/resume cycle (or its resume blip); the music just
+  stays smoothly ducked. The old `pause_confirm` car-swap holdover is bypassed
+  entirely inside zones (it still applies to normal pauses elsewhere).
+- **`--geofence-pause-grace` (default 8 s).** How long ducking persists into a
+  pause while in a zone before normal pause behaviour resumes — long enough to
+  cover a car swap, short enough that quitting to a menu doesn't leave the music
+  ducked indefinitely.
+- **README:** documented parked/garage ducking — idle-duck, geofence duck-zones,
+  marking spots, and the pause-priority behaviour — and expanded the config table.
+
 ## 0.0.27
 - **Geofence duck-zones (Forza).** You can now mark a spot — sit in a garage and
   hit "Mark Current Spot" (GUI) or run `underscore mark` — and the music ducks
