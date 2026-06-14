@@ -100,7 +100,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-__version__ = "0.0.24"
+__version__ = "0.0.26"
 
 SINK_NAME = "underscore_game"
 SAMPLE_RATE = 16000
@@ -144,6 +144,7 @@ class Config:
     attack: float = 0.12              # fade-down time (s)
     release: float = 0.9              # fade-up time (s)
     resume_fade: float = 2.0          # pause→play fade-in (s)
+    pause_method: str = "mute"        # mute (volume-only, no blip) | transport (real Pause/Play)
     resume_hold: float = 0.2          # force-mute window across player vol reset (s)
     pause_confirm: float = 0.7        # pause must persist this long before pausing
     hangover: float = 1000.0          # keep ducking after speech drops (ms)
@@ -333,6 +334,25 @@ class MPRISBackend(VolumeBackend):
                 self._reset_conn()       # drop dead socket; caller re-resolves
                 raise
 
+    def pid(self) -> Optional[int]:
+        """Host PID of the player's process, via D-Bus GetConnectionUnixProcessID.
+        Used to pin the player's PipeWire sink-input. Returns None when the player
+        doesn't expose one (e.g. a Flatpak whose stream carries no process id)."""
+        if self._bus_name is None and not self.present():
+            return None
+        from jeepney import DBusAddress, new_method_call
+        try:
+            with self._lock:
+                conn = self._conn_get()
+                dbus = DBusAddress("/org/freedesktop/DBus",
+                                   bus_name="org.freedesktop.DBus",
+                                   interface="org.freedesktop.DBus")
+                msg = new_method_call(dbus, "GetConnectionUnixProcessID",
+                                      "s", (self._bus_name,))
+                return int(conn.send_and_get_reply(msg).body[0])
+        except Exception:
+            return None
+
     # -- VolumeBackend interface ---------------------------------------------
     def present(self) -> bool:
         self._bus_name = self._resolve()
@@ -464,72 +484,134 @@ def make_volume_backend(kind: str, player: str, match: str) -> VolumeBackend:
 
 
 class StreamGate:
-    """Best-effort *instant* mute of the music app's PipeWire stream, used only
-    to gate the resume 'slam'. MPRIS Volume can't silence the audio Spotify emits
-    the instant it receives Play (it restores its own volume and flushes buffered
-    audio before any Volume write lands), so we mute the stream at the graph level
-    instead — server-enforced and immediate. Tries pactl first (sink-input mute),
-    then wpctl (node mute). No-op if neither can find the stream, in which case
-    resume falls back to the old MPRIS-only behaviour."""
-    def __init__(self, match: str):
-        self._match = match
-        self._pa = PactlBackend(match) if have("pactl") else None
-        self._wp = have("wpctl") and have("pw-dump")
-        self._wp_id: Optional[str] = None
+    """Best-effort *instant* mute of the music's PipeWire sink-input, used to gate
+    the resume 'slam' for transport-mode pausing. MPRIS Volume can't silence the
+    audio a player flushes the moment it uncorks on Play, so we mute the stream at
+    the graph level instead (server-enforced, immediate).
+
+    Finding the right sink-input is the hard part: a sandboxed player's stream
+    node is often anonymous ('audio-src', no app name, a useless in-sandbox PID).
+    So we resolve it through its PipeWire *client*, which does carry the identity —
+    application.name/binary ('spotify') and the real host PID in pipewire.sec.pid.
+    We match by the controlled player's PID (node PID, client PID, or sec.pid)
+    first, then by music_match against the node's or client's labels. No-op
+    (returns False) when pactl is absent or nothing matches."""
+    def __init__(self, match: str, pid_fn: Optional[Callable[[], Optional[int]]] = None):
+        self._match = re.compile(match, re.IGNORECASE)
+        self._pid_fn = pid_fn
+        self._have = have("pactl")
+        self._index: Optional[str] = None
 
     def available(self) -> bool:
-        return self._pa is not None or self._wp
+        return self._have
 
-    def _wp_find(self) -> Optional[str]:
-        # Match the music app among PipeWire stream nodes via pw-dump JSON.
+    def _clients(self) -> dict:
+        """Map client-id -> {'label': <names>, 'pids': {pid strings}} from
+        `pactl list clients`. A sandboxed app's sink-input node is anonymous, but
+        its client carries application.name/binary and the real host PID in
+        pipewire.sec.pid — so this is where we recover the identity."""
+        clients: dict = {}
         try:
-            import json
-            out = _run(["pw-dump"]).stdout
-            rx = re.compile(self._match, re.IGNORECASE)
-            for node in json.loads(out):
-                if node.get("type") != "PipeWire:Interface:Node":
-                    continue
-                props = (node.get("info") or {}).get("props") or {}
-                if props.get("media.class") != "Stream/Output/Audio":
-                    continue
-                label = " ".join(str(props.get(k, "")) for k in
-                                  ("application.name", "media.name",
-                                   "application.process.binary", "node.name"))
-                if rx.search(label):
-                    return str(node.get("id"))
+            out = _run(["pactl", "list", "clients"]).stdout
         except Exception:
-            pass
+            return clients
+        cid = None
+        for line in out.splitlines():
+            s = line.strip()
+            m = re.match(r"Client #(\d+)", s)
+            if m:
+                cid = m.group(1)
+                clients[cid] = {"label": "", "pids": set()}
+                continue
+            if cid is None:
+                continue
+            pm = re.match(r'(pipewire\.sec\.pid|application\.process\.id)'
+                          r'\s*=\s*"(\d+)"', s)
+            if pm:
+                clients[cid]["pids"].add(pm.group(2))
+                continue
+            nm = re.match(r'(application\.name|application\.process\.binary'
+                          r'|node\.name)\s*=\s*"(.*)"', s)
+            if nm and nm.group(2):
+                clients[cid]["label"] += " " + nm.group(2)
+        return clients
+
+    def _scan(self) -> Optional[str]:
+        """Return the sink-input index of the music stream. Match priority:
+        (1) the controlled player's PID against the sink-input's node PID, its
+        client's PID, or the client's pipewire.sec.pid; (2) music_match against
+        the node's labels OR its client's labels (so a Flatpak's anonymous
+        'audio-src' node still resolves via its 'spotify' client)."""
+        if not self._have:
+            return None
+        try:
+            out = _run(["pactl", "list", "sink-inputs"]).stdout
+        except Exception:
+            return None
+        want_pid = None
+        if self._pid_fn:
+            try:
+                p = self._pid_fn()
+                want_pid = str(p) if p is not None else None
+            except Exception:
+                want_pid = None
+        clients = self._clients()
+        blocks: list[dict] = []
+        cur: dict = {}
+        for line in out.splitlines():
+            s = line.strip()
+            m = re.match(r"Sink Input #(\d+)", s)
+            if m:
+                if cur:
+                    blocks.append(cur)
+                cur = {"index": m.group(1), "label": "", "pids": set(),
+                       "client": None}
+            elif cur:
+                cm = re.match(r"Client:\s*(\d+)", s)
+                if cm:
+                    cur["client"] = cm.group(1)
+                    continue
+                pm = re.match(r'application\.process\.id\s*=\s*"(\d+)"', s)
+                if pm:
+                    cur["pids"].add(pm.group(1))
+                    continue
+                nm = re.match(r'(application\.name|media\.name'
+                              r'|application\.process\.binary|node\.name)'
+                              r'\s*=\s*"(.*)"', s)
+                if nm:
+                    cur["label"] += " " + nm.group(2)
+        if cur:
+            blocks.append(cur)
+        # Fold in each sink-input's client identity (label + pids).
+        for b in blocks:
+            c = clients.get(b.get("client") or "")
+            if c:
+                b["label"] += " " + c["label"]
+                b["pids"] |= c["pids"]
+        if want_pid is not None:
+            for b in blocks:
+                if want_pid in b["pids"]:
+                    return b["index"]
+        for b in blocks:
+            if self._match.search(b["label"]):
+                return b["index"]
         return None
 
     def mute(self) -> bool:
-        """Mute the stream now. Returns True if a mute was actually applied."""
-        if self._pa is not None:
-            try:
-                if self._pa.present() and self._pa._index:
-                    r = _run(["pactl", "set-sink-input-mute", self._pa._index, "1"])
-                    if r.returncode == 0:
-                        return True
-            except Exception:
-                pass
-        if self._wp:
-            self._wp_id = self._wp_find()
-            if self._wp_id:
-                try:
-                    r = _run(["wpctl", "set-mute", self._wp_id, "1"])
-                    return r.returncode == 0
-                except Exception:
-                    pass
-        return False
+        """Mute the music stream now. Returns True if a mute was actually applied."""
+        idx = self._scan()
+        if idx is None:
+            return False
+        self._index = idx
+        try:
+            return _run(["pactl", "set-sink-input-mute", idx, "1"]).returncode == 0
+        except Exception:
+            return False
 
     def unmute(self) -> None:
-        if self._pa is not None and self._pa._index:
+        if self._index:
             try:
-                _run(["pactl", "set-sink-input-mute", self._pa._index, "0"])
-            except Exception:
-                pass
-        if self._wp and self._wp_id:
-            try:
-                _run(["wpctl", "set-mute", self._wp_id, "0"])
+                _run(["pactl", "set-sink-input-mute", self._index, "0"])
             except Exception:
                 pass
 
@@ -1314,8 +1396,11 @@ class Engine:
                     f"player; check names with the players command.")
         self._vol = vol
         self._base = vol.get()
-        # Instant PipeWire-level mute used to kill the resume slam (see StreamGate).
-        self._gate = StreamGate(cfg.music_match)
+        # Instant PipeWire-level mute used to kill the resume slam (transport mode).
+        # Pin the music sink-input by the player's PID when the backend exposes one.
+        pid_fn = getattr(vol, "pid", None)
+        self._gate = StreamGate(cfg.music_match,
+                                pid_fn=pid_fn if callable(pid_fn) else None)
 
         # ── BeamNG media-sync mode (telemetry only — no VAD, no capture) ──
         if cfg.game in ("auto", "beamng"):
@@ -1463,13 +1548,27 @@ class Engine:
             self._emit()
 
     # -- the loops -------------------------------------------------------------
+    def _do_pause(self) -> None:
+        """Silence the music for a game pause. In 'mute' mode we DON'T send the
+        player a transport Pause — we just drop the volume to 0 and leave the
+        stream playing (uncorked). That's the only reliable way to avoid the
+        resume slam: with no Pause there's no cork, so on resume there's no
+        buffered-audio flush for any player to blast through, regardless of how
+        its PipeWire stream is named or whether it exposes a PID. The trade-off
+        is that the track keeps advancing silently while paused. 'transport' mode
+        sends a real Pause (track freezes) and tries the stream-mute gate."""
+        if self.cfg.pause_method == "transport":
+            self._vol.pause()
+        self._fader.snap(0.0)
+
     def _do_resume(self) -> None:
-        """Resume the music without the slam. MPRIS volume can't gate the audio
-        Spotify emits the instant it gets Play, so we mute the stream at the
-        PipeWire level first (instant, server-enforced), send Play, start the
-        fade, then unmute once the fade has begun — by which point the player's
-        own volume reset has settled and the fader is back in control."""
+        """Mirror of _do_pause. In 'mute' mode just fade the volume back up — the
+        stream never stopped, so this can't blip. In 'transport' mode send Play
+        and use the stream-mute gate + fade to suppress the slam where possible."""
         cfg = self.cfg
+        if cfg.pause_method == "mute":
+            self._fader.fade_to(self._base, cfg.resume_fade)
+            return
         gated = self._gate.mute() if self._gate else False
         self._vol.play()
         self._fader.resume(self._base, cfg.resume_fade, cfg.resume_hold)
@@ -1516,8 +1615,7 @@ class Engine:
                     not_driving_since = now
                 if (now - not_driving_since) >= pause_delay and not self._music_paused:
                     logging.info("not driving — pausing music")
-                    vol.pause()
-                    fader.snap(0.0)                     # mute now so resume can't blip
+                    self._do_pause()
                     self._music_paused = True
                     self.status["paused"] = True
                     self._emit()
@@ -1605,9 +1703,8 @@ class Engine:
                     pause_since = None
                     confirmed = False
                 if confirmed and not self._music_paused:
-                    logging.info("pausing + muting (%s)", state)
-                    vol.pause()
-                    fader.snap(0.0)        # mute now; resume can't blip
+                    logging.info("pausing (%s, method=%s)", state, cfg.pause_method)
+                    self._do_pause()
                     self._music_paused = True
                     self.status["paused"] = True
                     self._emit()
@@ -1662,6 +1759,7 @@ def config_from_args(args: argparse.Namespace) -> Config:
         idle=args.idle, menu_idle=args.menu_idle, threshold=args.threshold,
         release_threshold=args.release_threshold, attack=args.attack,
         release=args.release, resume_fade=args.resume_fade,
+        pause_method=args.pause_method,
         resume_hold=args.resume_hold, pause_confirm=args.pause_confirm,
         hangover=args.hangover, pause_grace=args.pause_grace,
         port=args.port, no_telemetry=args.no_telemetry,
@@ -1799,6 +1897,10 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--attack", type=float, default=0.12, help="Fade-down time (s)")
     r.add_argument("--release", type=float, default=0.9,
                    help="Fade-up time after speech ends (s)")
+    r.add_argument("--pause-method", choices=["mute", "transport"], default="mute",
+                   help="'pause' policy: mute = volume-only, never sends Pause/Play "
+                        "(no resume blip; track advances). transport = real "
+                        "Pause/Play (track freezes; may blip on some players)")
     r.add_argument("--resume-fade", type=float, default=2.0,
                    help="'pause' policy: fade-in time when resuming from a pause (s)")
     r.add_argument("--resume-hold", type=float, default=0.2,

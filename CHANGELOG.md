@@ -4,6 +4,41 @@ All notable changes to Underscore. Versions are pre-1.0 while the project
 stabilises; the patch number bumps with each meaningful change. Numbering starts
 from when the GUI work began (earlier CLI-only history is not versioned here).
 
+## 0.0.26
+- **Transport-mode pausing now works for Flatpak Spotify too.** The previous
+  build could only pin a stream that carried identity on its own PipeWire node;
+  a Flatpak's node is anonymous ('audio-src', and a useless in-sandbox PID of 4).
+  The fix: resolve the stream through its PipeWire *client*, which does carry the
+  truth — `application.name`/`binary` = "spotify" and the real host PID in
+  `pipewire.sec.pid`. The stream-mute gate now reads `pactl list clients`, folds
+  each sink-input's client identity into the match, and pins by the player's PID
+  (node PID, client PID, or sec.pid) then by name (node or client labels). Net:
+  real track-freeze pausing, blip-free, works for native, browser, and Flatpak
+  Spotify — which also clears the path for the Steam Deck (where Spotify is a
+  Flatpak). 'mute' mode remains the default and the zero-identification fallback.
+
+## 0.0.25
+- **New default pause method: "mute" — the blip is gone for good.** Diagnosis
+  (thanks to live pactl/pw traces) showed the player's PipeWire stream is *stable*
+  across a pause (it corks/uncorks, same index) — Spotify was never tearing it
+  down. The slam came from the uncork-on-Play flush, which MPRIS volume can't
+  catch. "mute" mode sidesteps the whole problem: on pause it just drives the
+  player's volume to 0 and leaves the stream uncorked and playing; on resume it
+  fades back up. Nothing corks, so nothing can flush — no blip, on any player
+  (Flatpak, browser, native), with no stream identification needed at all. The
+  one trade-off: the track keeps advancing silently while paused. Set
+  `--pause-method transport` (or the GUI "Pause Method" dropdown) to get the old
+  real-Pause/Play behaviour back, where the track freezes.
+- **Transport mode now finds the stream by PID.** When you do want real track-
+  freeze pausing, the resume gate now pins the music sink-input by the *PID* of
+  the MPRIS player it controls (matching `application.process.id`), instead of by
+  a name that may be a generic "audio-src". This makes the blip-free gate work for
+  players that expose a PID (browser, native). A sandboxed Flatpak whose stream
+  carries no process id still can't be pinned — that's exactly the case "mute"
+  mode is for.
+- **GUI: "Pause Method" dropdown** (Mute / Transport) in the Ducking group,
+  enabled when Menu Policy is "pause".
+
 ## 0.0.24
 - **Actually killed the pause-resume blip.** The 0.0.23 fix wrote MPRIS volume 0
   on resume, but that's the wrong lever: Spotify restores its *own* volume and
