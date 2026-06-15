@@ -28,6 +28,13 @@ stops it fades back up. Music volume and play/pause are driven over MPRIS throug
 D-Bus (so any standard player works — Spotify, mpv, etc.), with `playerctl` and
 `pactl` as fallbacks.
 
+Speech detection itself isn't tied to Forza, or to games at all — it just listens
+to an audio stream and ducks on voice. The Forza (and BeamNG) telemetry only powers
+the *state-aware* extras: pausing in menus, and ducking while parked in the garage.
+For anything else — a different game, a Twitch stream, a YouTube video, a film in
+the background — run **`--game generic`** (or pick **Generic** in the GUI) and
+Underscore ducks your music whenever it hears speech, with no telemetry involved.
+
 ---
 
 ## Requirements
@@ -172,10 +179,19 @@ left alone. Sit in a garage and record the spot, then enable the zones:
 
 A spot is a small box (default ±20 units on each axis, `--geofence-radius`) around
 the recorded coordinate. It's intentionally tight: once you take control of the car
-its position moves outside the box, so the music comes straight back up. Saved zones
-live in `config.toml` and are **per-save and per-map** — the coordinates only mean
-anything on the map they were recorded on, so re-mark if you switch maps. (For other
-Forza titles, set the position field offset with `--pos-offset`; FH6 is 244.)
+its position moves outside the box, so the music comes straight back up. You also
+have to **dwell** inside the box for `--geofence-enter-grace` (default 1 s) before it
+ducks, so merely driving *through* a marked spot does nothing — only parking there
+triggers it.
+
+**Zones are tagged by game.** Forza Horizon 4, 5 and 6 send byte-identical telemetry
+but are different maps, so a coordinate saved in one is meaningless (and a possible
+false trigger) in another. Each zone is therefore stamped with the title it was
+marked in, and only zones matching the running title apply. Because the titles can't
+be told apart from the packet, you name yours explicitly — `--game fh6` (or `fh5` /
+`fh4`), or the **Game** dropdown in the GUI — and mark your garages under it. Run with
+that title and only its zones are live. (Older zones saved before tagging are
+untagged and apply to any Forza title; re-mark them under a title to pin them down.)
 
 Inside a saved zone, **ducking takes priority over the pause policy**: a car swap
 briefly zeroes the telemetry, but Underscore stays "in" the zone and keeps the music
@@ -215,8 +231,8 @@ the GUI**. Use a different location with the global `--config PATH` flag (e.g.
 | `--menu-policy {speech,always,never,pause}` | Behavior in menus (default `speech`) |
 | `--pause-method {mute,transport}` | `pause` policy: `mute` = volume-only, no resume blip (track runs on); `transport` = real Pause/Play (track freezes) |
 | `--idle-duck` · `--idle-grace S` · `--idle-speed M` | Duck when parked anywhere (see above) |
-| `--geofence-duck` · `--geofence-radius U` · `--geofence-pause-grace S` | Duck only inside saved spots (see above) |
-| `--game {auto,forza,beamng}` | Telemetry source (auto-detects BeamNG OutGauge vs Forza Data Out) |
+| `--geofence-duck` · `--geofence-radius U` · `--geofence-enter-grace S` · `--geofence-pause-grace S` | Duck only inside saved spots (see above) |
+| `--game {auto,fh4,fh5,fh6,forza,generic,beamng}` | Game/title. Auto-detects BeamNG vs Forza; a Horizon title keeps its garage zones separate; `generic` = VAD-only ducking for any game or media (no telemetry) |
 | `--verbose` | Debug logging |
 | `--version` | Print version |
 

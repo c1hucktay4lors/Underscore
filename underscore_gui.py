@@ -35,6 +35,10 @@ from underscore import (
 MENU_POLICIES = ["speech", "always", "never", "pause"]
 PAUSE_SCOPES = ["from-gameplay", "all-menus"]
 PAUSE_METHODS = ["mute", "transport"]
+# (label, config value) — title matters for keeping each game's garage zones apart
+GAMES = [("Auto-detect", "auto"), ("Forza Horizon 6", "fh6"),
+         ("Forza Horizon 5", "fh5"), ("Forza Horizon 4", "fh4"),
+         ("Generic — any game / media", "generic"), ("BeamNG.drive", "beamng")]
 
 
 # ── a float-valued slider with an inline value label ─────────────────────────-
@@ -204,6 +208,14 @@ class MainWindow(QMainWindow):
         f_audio.addRow("Player", self._w_player)
         self.chk_now_playing = QCheckBox("Announce each new track (EA-TRAX-style)")
         f_audio.addRow(self.chk_now_playing)
+        self.cmb_game = QComboBox()
+        for label, _val in GAMES:
+            self.cmb_game.addItem(label)
+        self.cmb_game.setToolTip("Pick your Horizon title so its garage zones stay "
+                                 "separate from the other titles' (FH4/5/6 share a "
+                                 "packet format, so this can't be auto-detected). "
+                                 "Auto-detect still finds BeamNG vs Forza.")
+        f_audio.addRow("Game", self.cmb_game)
 
         self.cmb_monitor = QComboBox()
         self.cmb_monitor.setEditable(True)
@@ -258,6 +270,11 @@ class MainWindow(QMainWindow):
         f_duck.addRow(self.chk_geofence)
         self.sld_geofence_radius = FloatSlider(5.0, 100.0, 1.0, "{:.0f}", " u")
         f_duck.addRow("Geofence Size", self.sld_geofence_radius)
+        self.sld_geofence_enter = FloatSlider(0.0, 5.0, 0.5, "{:.1f}", " s")
+        self.sld_geofence_enter.setToolTip("Dwell time inside a saved spot before "
+                                           "ducking, so just driving through it does "
+                                           "nothing.")
+        f_duck.addRow("Garage Dwell", self.sld_geofence_enter)
         slay.addWidget(g_duck)
 
         # detection
@@ -382,6 +399,8 @@ class MainWindow(QMainWindow):
     def _cfg_to_widgets(self, c: Config):
         self.cmb_player.setCurrentText(c.player)
         self.chk_now_playing.setChecked(c.now_playing)
+        vals = [v for _l, v in GAMES]
+        self.cmb_game.setCurrentIndex(vals.index(c.game) if c.game in vals else 0)
         self.cmb_monitor.setCurrentText(c.game_monitor)
         self.cmb_policy.setCurrentText(c.menu_policy)
         self.cmb_scope.setCurrentText(c.pause_scope)
@@ -399,6 +418,7 @@ class MainWindow(QMainWindow):
         self.sld_idle_grace.setValue(c.idle_grace)
         self.chk_geofence.setChecked(c.geofence_duck)
         self.sld_geofence_radius.setValue(c.geofence_radius)
+        self.sld_geofence_enter.setValue(c.geofence_enter_grace)
         self.lbl_geo.setText(f"{len(c.geofences)} saved")
         self._sync_policy_enabled()
 
@@ -406,6 +426,7 @@ class MainWindow(QMainWindow):
         base = load_config()                     # preserve fields we don't expose
         base.player = self.cmb_player.currentText().strip() or "spotify"
         base.now_playing = self.chk_now_playing.isChecked()
+        base.game = GAMES[self.cmb_game.currentIndex()][1]
         base.game_monitor = self.cmb_monitor.currentText().strip()
         base.menu_policy = self.cmb_policy.currentText()
         base.pause_scope = self.cmb_scope.currentText()
@@ -423,6 +444,7 @@ class MainWindow(QMainWindow):
         base.idle_grace = round(self.sld_idle_grace.value(), 1)
         base.geofence_duck = self.chk_geofence.isChecked()
         base.geofence_radius = round(self.sld_geofence_radius.value(), 1)
+        base.geofence_enter_grace = round(self.sld_geofence_enter.value(), 1)
         return base
 
     def _sync_policy_enabled(self, *_):

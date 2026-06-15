@@ -4,6 +4,27 @@ All notable changes to Underscore. Versions are pre-1.0 while the project
 stabilises; the patch number bumps with each meaningful change. Numbering starts
 from when the GUI work began (earlier CLI-only history is not versioned here).
 
+## 0.0.32
+- **Generic mode — `--game generic`** (or **Generic** in the GUI's Game dropdown).
+  The speech detector was never really Forza-specific; only the state-aware extras
+  (menu-pause, garage ducking) need telemetry. Generic mode turns telemetry off and
+  just ducks your music whenever it hears speech — for any other game, or any media
+  at all (a stream, a video, a film in the background). README now says so up front.
+
+## 0.0.31
+- **Per-game garage zones.** Forza Horizon 4/5/6 send identical telemetry but are
+  different maps, so a saved spot from one could false-trigger in another. Each
+  saved zone is now tagged with the title it was marked in, and only zones for the
+  running title apply. Name your title with `--game fh6` (or `fh5`/`fh4`), or the
+  new **Game** dropdown in the GUI, and mark garages under it. Zones saved before
+  this (untagged) still apply to any Forza title until re-marked. Confirmed the
+  FH4/FH5/FH6 Data Out layout is byte-identical (Position@244, Speed@256), so this
+  is purely about keeping coordinate sets apart.
+- **Garage dwell grace (`--geofence-enter-grace`, default 1 s).** You now have to
+  sit inside a saved spot for a moment before it ducks, so driving *through* a
+  marked location no longer dips the music — only actually parking there does.
+- README + GUI updated (Game dropdown, Garage Dwell slider).
+
 ## 0.0.30
 - **Now Playing notifications (EA-TRAX style).** With **Announce each new track**
   (GUI) or `--now-playing`, Underscore pops a desktop notification — *♪ Now

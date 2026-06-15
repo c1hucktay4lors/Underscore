@@ -100,7 +100,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-__version__ = "0.0.30"
+__version__ = "0.0.32"
 
 SINK_NAME = "underscore_game"
 SAMPLE_RATE = 16000
@@ -154,7 +154,7 @@ class Config:
     pause_grace: float = 20.0         # 'always' policy pause grace (s)
     port: int = 5335                  # Forza Data Out UDP port
     no_telemetry: bool = False        # disable the state machine
-    game: str = "auto"                # auto | forza | beamng
+    game: str = "auto"                # auto | fh4 | fh5 | fh6 | forza | beamng
     beamng_port: int = 4444           # BeamNG OutGauge UDP port
     idle_duck: bool = False           # Forza: duck when stopped (garage / parked)
     idle_grace: float = 4.0           # seconds stationary before idle-duck kicks in
@@ -162,11 +162,14 @@ class Config:
     speed_offset: int = OFF_SPEED_FH6 # Forza Speed(m/s) field offset (FH6 = 256)
     geofence_duck: bool = False       # Forza: duck while parked inside a saved spot
     geofence_radius: float = 20.0     # half-size of the per-axis box around each spot
+    geofence_enter_grace: float = 1.0 # must dwell inside a zone this long before
+                                      # ducking — so a quick drive-through is ignored
     geofence_pause_grace: float = 8.0 # keep ducking (not pausing) this long into a
                                       # pause while in a zone — covers car swaps,
                                       # then falls back to normal pause if you left
     pos_offset: int = OFF_POS_FH6     # Forza PositionX offset (Y=+4, Z=+8; FH6 = 244)
-    geofences: list = field(default_factory=list)  # saved [x,y,z] duck-zone centres
+    geofences: list = field(default_factory=list)  # saved [game, x, y, z] duck-zones
+                                                    # (legacy [x, y, z] still read)
 
 
 _CONFIG_OVERRIDE = None       # set by `--config PATH`; None → default XDG location
@@ -219,14 +222,45 @@ def save_config(cfg: Config) -> None:
         elif isinstance(v, (int, float)):
             val = repr(v)
         elif isinstance(v, list):
-            # list of [x,y,z] float triples → TOML array of arrays
-            rows = ", ".join("[" + ", ".join(repr(float(c)) for c in row) + "]"
+            # geofences: rows of [game, x, y, z] (or legacy [x, y, z]). TOML 1.0
+            # allows heterogeneous arrays, so quote strings and float the rest.
+            def _cell(c):
+                if isinstance(c, str):
+                    return '"' + c.replace("\\", "\\\\").replace('"', '\\"') + '"'
+                return repr(float(c))
+            rows = ", ".join("[" + ", ".join(_cell(c) for c in row) + "]"
                              for row in v)
             val = "[" + rows + "]"
         else:
             val = '"' + str(v).replace("\\", "\\\\").replace('"', '\\"') + '"'
         lines.append(f"{k} = {val}")
     p.write_text("\n".join(lines) + "\n")
+
+
+FORZA_TITLES = ("fh4", "fh5", "fh6")   # share the Data Out format; differ by map only
+
+
+def _game_key(game: str) -> str:
+    """Canonical key a saved zone is tagged with / matched against. Concrete Horizon
+    titles keep their name; anything else Forza-side collapses to generic 'forza'
+    (the packet can't tell FH4/5/6 apart, so the title comes from the user)."""
+    return game if game in FORZA_TITLES else "forza"
+
+
+def _fence_tag(rec) -> str:
+    """Game tag of a saved zone; '' for legacy untagged [x, y, z] records."""
+    return rec[0] if len(rec) >= 4 and isinstance(rec[0], str) else ""
+
+
+def _fence_xyz(rec):
+    """The (x, y, z) of a saved zone, whether tagged [game,x,y,z] or legacy [x,y,z]."""
+    return [float(c) for c in rec[-3:]]
+
+
+def _fences_for_game(geofences, game_key):
+    """Coordinates of the saved zones that apply to the running title: those tagged
+    for this title, plus legacy untagged ones (which match any Forza title)."""
+    return [_fence_xyz(r) for r in geofences if _fence_tag(r) in ("", game_key)]
 
 
 def _in_geofence(pos, centers, radius) -> bool:
@@ -1557,7 +1591,14 @@ class Engine:
         if not (have("pw-record") or have("parec")):
             return "No capture tool (pw-record or parec). Install pipewire."
 
-        use_tele = ((not cfg.no_telemetry)
+        generic = (cfg.game == "generic")
+        if generic:
+            # VAD-only: any game or any media (a stream, a video, a different game).
+            # No telemetry, so the state-aware extras (pause-in-menu, garage/geofence
+            # /idle ducking) don't apply — we simply duck on detected speech. Force
+            # the speech policy so 'always'/'pause' can't misbehave with no state.
+            cfg.menu_policy = "speech"
+        use_tele = ((not generic) and (not cfg.no_telemetry)
                     and (cfg.menu_policy in ("always", "pause")
                          or cfg.idle_duck or cfg.geofence_duck))
         if cfg.menu_policy == "pause" and not use_tele:
@@ -1577,10 +1618,13 @@ class Engine:
             self._cleanup()
             return str(e)
 
-        self._mode = "forza"
-        self.status.update(running=True, mode="forza", backend=vol.name,
+        self._mode = "generic" if generic else "forza"
+        self.status.update(running=True, mode=self._mode, backend=vol.name,
                            monitor=monitor, volume=self._base, paused=False,
                            override=False)
+        if generic:
+            logging.info("Generic mode — VAD-only ducking for any game or media "
+                         "(no telemetry; ducks on detected speech).")
         self._override = False
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -1659,16 +1703,17 @@ class Engine:
         pos = self._last_pos
         if pos is None:
             return None
+        key = _game_key(self.cfg.game)
         coord = [round(float(pos[0]), 1), round(float(pos[1]), 1),
                  round(float(pos[2]), 1)]
-        self.cfg.geofences.append(coord)
+        self.cfg.geofences.append([key] + coord)
         try:
             save_config(self.cfg)
         except Exception as e:
             logging.warning("could not persist geofence: %s", e)
-        logging.info("marked duck-zone at %s (now %d saved)",
-                     coord, len(self.cfg.geofences))
-        _notify("Underscore: duck-zone marked",
+        logging.info("marked %s duck-zone at %s (now %d saved)",
+                     key, coord, len(self.cfg.geofences))
+        _notify(f"Underscore: {key} duck-zone marked",
                 f"{coord[0]:.0f}, {coord[1]:.0f}, {coord[2]:.0f}")
         return coord
 
@@ -1782,7 +1827,9 @@ class Engine:
         idle_since = None          # monotonic time the car first went stationary
         pause_since = None         # monotonic time want_pause first became true
         geo_sticky = False         # currently in (or just-paused inside) a duck-zone
+        geo_in_since = None         # when we entered the box (for the enter grace)
         geo_paused_since = None     # when telemetry zeroed while sticky
+        game_key = _game_key(cfg.game)   # which saved zones apply to this title
         self._music_paused = False
 
         while not self._stop.is_set():
@@ -1828,19 +1875,34 @@ class Engine:
             # Geofence-duck: stay ducked while parked inside a saved duck-zone
             # (e.g. a garage); un-duck the moment we drive out of the box.
             #
+            # Only zones tagged for this title (plus legacy untagged ones) count, so
+            # garages saved in FH5 can't trigger in FH6 and vice-versa.
+            #
+            # Enter grace: you must DWELL in the box for geofence_enter_grace seconds
+            # before ducking, so merely driving through a marked spot does nothing.
+            #
             # Stickiness: a car swap briefly zeroes telemetry (a sub-second PAUSED
             # blip), which would otherwise drop us out of the zone and un-duck (or,
-            # under the pause policy, pause the music). So once we're in a zone we
-            # STAY "in" it through a pause — keeping the music ducked, never pausing
+            # under the pause policy, pause the music). So once we're ducked we STAY
+            # "in" the zone through a pause — keeping the music ducked, never pausing
             # — until either we drive out (a gameplay frame outside the box) or the
             # pause outlasts geofence_pause_grace (you've left to a menu).
-            in_box = (cfg.geofence_duck and cfg.geofences
+            fences = (_fences_for_game(cfg.geofences, game_key)
+                      if cfg.geofence_duck else [])
+            in_box = (bool(fences) and state == GAMEPLAY
                       and _in_geofence(tele.position if tele else None,
-                                       cfg.geofences, cfg.geofence_radius))
+                                       fences, cfg.geofence_radius))
             if state == GAMEPLAY:
-                geo_sticky = bool(in_box)        # confirm or clear on live frames
+                if in_box:
+                    if geo_in_since is None:
+                        geo_in_since = now
+                    if (now - geo_in_since) >= cfg.geofence_enter_grace:
+                        geo_sticky = True        # dwelled long enough → duck
+                else:
+                    geo_in_since = None
+                    geo_sticky = False           # drove out of the box → un-duck now
                 geo_paused_since = None
-            elif geo_sticky:                     # telemetry zeroed but we were in a zone
+            elif geo_sticky:                     # telemetry zeroed but we were ducked
                 if geo_paused_since is None:
                     geo_paused_since = now
                 if (now - geo_paused_since) >= cfg.geofence_pause_grace:
@@ -1956,6 +2018,7 @@ def config_from_args(args: argparse.Namespace) -> Config:
         idle_duck=args.idle_duck, idle_grace=args.idle_grace,
         idle_speed=args.idle_speed, speed_offset=args.speed_offset,
         geofence_duck=args.geofence_duck, geofence_radius=args.geofence_radius,
+        geofence_enter_grace=args.geofence_enter_grace,
         geofence_pause_grace=args.geofence_pause_grace,
         pos_offset=args.pos_offset, geofences=saved_fences)
 
@@ -2175,8 +2238,13 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--port", type=int, default=5335, help="Forza Data Out UDP port")
     r.add_argument("--no-telemetry", action="store_true",
                    help="Disable state machine; gameplay/VAD policy everywhere")
-    r.add_argument("--game", choices=["auto", "forza", "beamng"], default="auto",
-                   help="Game mode (auto-detects BeamNG OutGauge vs Forza)")
+    r.add_argument("--game",
+                   choices=["auto", "fh4", "fh5", "fh6", "forza", "generic", "beamng"],
+                   default="auto",
+                   help="Game (auto-detects BeamNG vs Forza). Name the Horizon "
+                        "title — fh4/fh5/fh6 — to keep its garage zones separate. "
+                        "Use 'generic' for VAD-only ducking on ANY game or media "
+                        "(no telemetry; just ducks when speech is heard)")
     r.add_argument("--beamng-port", type=int, default=4444,
                    help="BeamNG OutGauge UDP port (media-sync mode)")
     r.add_argument("--idle-duck", action="store_true",
@@ -2194,6 +2262,9 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--geofence-radius", type=float, default=20.0,
                    help="Half-size of the per-axis box around each duck-zone "
                         "(world units; default 20)")
+    r.add_argument("--geofence-enter-grace", type=float, default=1.0,
+                   help="Dwell time inside a zone before ducking, so driving "
+                        "through a marked spot is ignored (s, default 1.0)")
     r.add_argument("--geofence-pause-grace", type=float, default=8.0,
                    help="Inside a zone, keep ducking (never pause) for this long "
                         "into a pause — covers car swaps without a pause blip; "
