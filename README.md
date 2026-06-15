@@ -185,14 +185,31 @@ Underscore assumes you've left for a menu and normal pause behavior resumes.
 
 ---
 
+## Now Playing notifications (EA TRAX style)
+
+Turn on **Announce each new track** in the GUI (or pass `--now-playing`) and
+Underscore pops a desktop notification — *♪ Now Playing · Artist — Title* — each
+time your music moves to a new song, the way the old EA Sports games flashed the
+track up on screen. It reads the track straight from the player's MPRIS metadata,
+polls about once a second, and de-dupes so each song announces only once. Works
+in both Forza and BeamNG modes (it's about the music, not the game), with any
+player that exposes metadata over MPRIS or `playerctl`.
+
+---
+
 ## Configuration
 
 Settings are saved to `~/.config/underscore/config.toml` and can be overridden per
-run with CLI flags:
+run with CLI flags. To get a fully-populated file of defaults to edit by hand, run
+`underscore init-config` (it won't overwrite an existing one without `--force`); a
+default config is also created automatically the first time you `run` **or launch
+the GUI**. Use a different location with the global `--config PATH` flag (e.g.
+`underscore --config ./my.toml run`).
 
 | Flag | Purpose |
 |------|---------|
 | `--player NAME` | MPRIS player to control (default `spotify`) |
+| `--now-playing` | Desktop notification of artist/title on each new track |
 | `--game-monitor NAME` | PipeWire monitor to capture |
 | `--volume-backend {auto,mpris,playerctl,pactl}` | How to control volume (default `auto`) |
 | `--menu-policy {speech,always,never,pause}` | Behavior in menus (default `speech`) |

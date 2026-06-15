@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
 )
 
 from underscore import (
-    Config, Engine, load_config, save_config, __version__,
+    Config, Engine, load_config, save_config, ensure_config, __version__,
     default_monitor, list_players, list_capture_targets,
     vsink_exists, create_virtual_sink, remove_virtual_sink, restart_pipewire,
     _pidfile_path,
@@ -105,6 +105,7 @@ class MainWindow(QMainWindow):
         self.bridge.error.connect(self._on_error)
 
         self._build_ui()
+        ensure_config()                                # create defaults file if none
         self._cfg_to_widgets(load_config())
         self._sync_policy_enabled()
 
@@ -201,6 +202,8 @@ class MainWindow(QMainWindow):
         row_player.addWidget(btn_player_refresh)
         self._w_player = _wrap(row_player)
         f_audio.addRow("Player", self._w_player)
+        self.chk_now_playing = QCheckBox("Announce each new track (EA-TRAX-style)")
+        f_audio.addRow(self.chk_now_playing)
 
         self.cmb_monitor = QComboBox()
         self.cmb_monitor.setEditable(True)
@@ -378,6 +381,7 @@ class MainWindow(QMainWindow):
     # -- config <-> widgets ---------------------------------------------------
     def _cfg_to_widgets(self, c: Config):
         self.cmb_player.setCurrentText(c.player)
+        self.chk_now_playing.setChecked(c.now_playing)
         self.cmb_monitor.setCurrentText(c.game_monitor)
         self.cmb_policy.setCurrentText(c.menu_policy)
         self.cmb_scope.setCurrentText(c.pause_scope)
@@ -401,6 +405,7 @@ class MainWindow(QMainWindow):
     def _widgets_to_cfg(self) -> Config:
         base = load_config()                     # preserve fields we don't expose
         base.player = self.cmb_player.currentText().strip() or "spotify"
+        base.now_playing = self.chk_now_playing.isChecked()
         base.game_monitor = self.cmb_monitor.currentText().strip()
         base.menu_policy = self.cmb_policy.currentText()
         base.pause_scope = self.cmb_scope.currentText()

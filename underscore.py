@@ -100,7 +100,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-__version__ = "0.0.28"
+__version__ = "0.0.30"
 
 SINK_NAME = "underscore_game"
 SAMPLE_RATE = 16000
@@ -135,6 +135,7 @@ DRIVING, STOPPED = "DRIVING", "STOPPED"
 class Config:
     player: str = "spotify"           # MPRIS player to control
     volume_backend: str = "auto"      # auto | mpris | playerctl | pactl
+    now_playing: bool = False         # EA-TRAX-style: notify-send on each new track
     music_match: str = "spotify"      # stream regex (pactl backend only)
     game_monitor: str = ""            # "" → underscore_game.monitor; "auto" → default sink
     menu_policy: str = "speech"       # speech | always | never | pause
@@ -168,9 +169,29 @@ class Config:
     geofences: list = field(default_factory=list)  # saved [x,y,z] duck-zone centres
 
 
+_CONFIG_OVERRIDE = None       # set by `--config PATH`; None → default XDG location
+
+
+def set_config_path(path) -> None:
+    global _CONFIG_OVERRIDE
+    _CONFIG_OVERRIDE = Path(os.path.expanduser(path)) if path else None
+
+
 def config_path() -> Path:
+    if _CONFIG_OVERRIDE is not None:
+        return _CONFIG_OVERRIDE
     base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
     return Path(base) / "underscore" / "config.toml"
+
+
+def ensure_config() -> Path:
+    """Create the config file populated with defaults if it doesn't already exist,
+    so there's always a documented file to edit. Returns the path either way."""
+    p = config_path()
+    if not p.exists():
+        save_config(Config())
+        logging.info("created default config at %s", p)
+    return p
 
 
 def load_config() -> Config:
@@ -253,6 +274,9 @@ class VolumeBackend:
     def supports_transport(self) -> bool: return False
     def pause(self) -> None: pass
     def play(self) -> None: pass
+    def metadata(self) -> Optional[tuple]:
+        """Return (artist, title) of the current track, or None if unavailable."""
+        return None
 
 
 class PlayerctlBackend(VolumeBackend):
@@ -284,6 +308,19 @@ class PlayerctlBackend(VolumeBackend):
 
     def play(self) -> None:
         _run(["playerctl", "-p", self.player, "play"])
+
+    def metadata(self) -> Optional[tuple]:
+        try:
+            r = _run(["playerctl", "-p", self.player, "metadata",
+                      "--format", "{{artist}}\t{{title}}"])
+        except Exception:
+            return None
+        line = (getattr(r, "stdout", "") or "").strip()
+        if not line:
+            return None
+        artist, _, title = line.partition("\t")
+        title = title.strip()
+        return (artist.strip(), title) if title else None
 
 
 class MPRISBackend(VolumeBackend):
@@ -427,6 +464,32 @@ class MPRISBackend(VolumeBackend):
             self._send(new_method_call(self._addr(), method))
         except Exception:
             self._bus_name = None
+
+    def metadata(self) -> Optional[tuple]:
+        """Read xesam:artist / xesam:title from the player's MPRIS Metadata."""
+        if self._bus_name is None and not self.present():
+            return None
+        from jeepney import Properties
+        try:
+            reply = self._send(Properties(self._addr()).get("Metadata"))
+        except Exception:
+            self._bus_name = None
+            return None
+
+        def unwrap(x):                       # jeepney variants decode to (sig, val)
+            if isinstance(x, tuple) and len(x) == 2 and isinstance(x[0], str):
+                return x[1]
+            return x
+        raw = unwrap(reply.body[0])
+        if not isinstance(raw, dict):
+            return None
+        title = unwrap(raw.get("xesam:title", "")) or ""
+        artist = unwrap(raw.get("xesam:artist", ""))
+        if isinstance(artist, (list, tuple)):
+            artist = ", ".join(str(a) for a in artist)
+        title = str(title).strip()
+        artist = str(artist or "").strip()
+        return (artist, title) if title else None
 
 
 class PactlBackend(VolumeBackend):
@@ -1414,6 +1477,8 @@ class Engine:
         self._override = False
         self._gate = None
         self._last_pos = None        # most recent (x,y,z) for geofence marking
+        self._np_last = None         # last (artist, title) we notified about
+        self._np_poll_at = 0.0       # monotonic time of next now-playing poll
         self._clean_lock = threading.Lock()
 
     # -- lifecycle -------------------------------------------------------------
@@ -1636,6 +1701,27 @@ class Engine:
             t.daemon = True
             t.start()
 
+    def _poll_now_playing(self, now: float) -> None:
+        """EA-TRAX-style: when the player's track changes, pop a notify-send with
+        'Artist — Title'. Polled (not signal-driven) at ~1.5 s so it survives any
+        backend and stays cheap; deduped so each track notifies once."""
+        if not self.cfg.now_playing or self._vol is None:
+            return
+        if now < self._np_poll_at:
+            return
+        self._np_poll_at = now + 1.5
+        try:
+            meta = self._vol.metadata()
+        except Exception:
+            meta = None
+        if not meta:
+            return
+        artist, title = meta
+        if not title or (artist, title) == self._np_last:
+            return
+        self._np_last = (artist, title)
+        _notify("\u266a Now Playing", f"{artist} \u2014 {title}" if artist else title)
+
     def _run_beamng(self) -> None:
         """Media-sync loop: pause the music when you're not driving (sim paused,
         on-foot, or engine off), resume it when you are. No audio is captured."""
@@ -1647,6 +1733,7 @@ class Engine:
 
         while not self._stop.is_set():
             now = time.monotonic()
+            self._poll_now_playing(now)
             self.status["rpm"] = round(beam.rpm)
             driving = beam.driving
 
@@ -1707,6 +1794,7 @@ class Engine:
                     self.on_error(msg)
                 break
             now = time.monotonic()
+            self._poll_now_playing(now)
 
             chunk = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
             prob = vad.prob(chunk)
@@ -1854,6 +1942,7 @@ def config_from_args(args: argparse.Namespace) -> Config:
     saved_fences = load_config().geofences
     return Config(
         player=args.player, volume_backend=args.volume_backend,
+        now_playing=args.now_playing,
         music_match=args.music_match, game_monitor=(args.game_monitor or ""),
         menu_policy=args.menu_policy, pause_scope=args.pause_scope,
         idle=args.idle, menu_idle=args.menu_idle, threshold=args.threshold,
@@ -1877,6 +1966,7 @@ def _pidfile_path() -> str:
 
 
 def cmd_run(args: argparse.Namespace) -> int:
+    ensure_config()                         # create defaults file if none exists
     cfg = config_from_args(args)
     eng = Engine(cfg)
     err = eng.start()
@@ -1951,6 +2041,18 @@ def cmd_toggle(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_init_config(args: argparse.Namespace) -> int:
+    """Write a config file of defaults to the config location (or --config PATH)
+    for hand-editing. Won't clobber an existing file unless --force."""
+    p = config_path()
+    if p.exists() and not args.force:
+        print(f"Config already exists at {p}\nUse --force to overwrite with defaults.")
+        return 1
+    save_config(Config())
+    print(f"Wrote default config to {p}")
+    return 0
+
+
 def cmd_mark(args: argparse.Namespace) -> int:
     """Record the car's current position as a duck-zone in a running Underscore
     (sit in the garage, then run `underscore mark`). `--clear` wipes saved zones."""
@@ -1988,6 +2090,9 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument("-v", "--verbose", action="store_true", help="Debug logging")
+    p.add_argument("--config", metavar="PATH", default=None,
+                   help="Use this config file instead of the default "
+                        "~/.config/underscore/config.toml")
     p.add_argument("--version", action="version",
                    version=f"underscore {__version__} — by c1hucktay4lors, "
                            "with Claude (Anthropic); MIT License")
@@ -1997,6 +2102,11 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("sources", help="List capture targets (find --game-monitor)")
     sub.add_parser("setup", help="Create a virtual sink to isolate the game")
     sub.add_parser("teardown", help="Remove the virtual sink")
+    ic = sub.add_parser("init-config",
+                        help="Write a default config file you can edit "
+                             "(at --config PATH, or the default location)")
+    ic.add_argument("--force", action="store_true",
+                    help="Overwrite an existing config file with defaults")
     sub.add_parser("toggle", help="Suspend/resume ducking in a running instance "
                                   "(bind a DE shortcut to this)")
     mk = sub.add_parser("mark", help="Record the car's current spot as a duck-zone "
@@ -2007,6 +2117,9 @@ def build_parser() -> argparse.ArgumentParser:
     r = sub.add_parser("run", help="Run the ducker")
     r.add_argument("--player", default="spotify",
                    help="MPRIS player name to duck (see `players`)")
+    r.add_argument("--now-playing", action="store_true",
+                   help="EA-TRAX style: pop a desktop notification with the "
+                        "artist and title each time the track changes")
     r.add_argument("--volume-backend", choices=["auto", "mpris", "playerctl", "pactl"],
                    default="auto", help="How to set volume (playerctl works "
                    "without pipewire-pulse)")
@@ -2104,11 +2217,13 @@ def main() -> int:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s  %(levelname)-7s %(message)s", datefmt="%H:%M:%S",
     )
+    if getattr(args, "config", None):
+        set_config_path(args.config)
     return {
         "players": cmd_players, "sources": cmd_sources,
         "setup": cmd_setup, "teardown": cmd_teardown,
         "run": cmd_run, "diag": cmd_diag, "toggle": cmd_toggle,
-        "mark": cmd_mark,
+        "mark": cmd_mark, "init-config": cmd_init_config,
     }[args.cmd](args)
 
 

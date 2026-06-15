@@ -4,6 +4,26 @@ All notable changes to Underscore. Versions are pre-1.0 while the project
 stabilises; the patch number bumps with each meaningful change. Numbering starts
 from when the GUI work began (earlier CLI-only history is not versioned here).
 
+## 0.0.30
+- **Now Playing notifications (EA-TRAX style).** With **Announce each new track**
+  (GUI) or `--now-playing`, Underscore pops a desktop notification — *♪ Now
+  Playing · Artist — Title* — whenever the music advances to a new song. It reads
+  the track from the player's MPRIS metadata (or `playerctl`), polls ~once a
+  second, and de-dupes so each track announces once. Works in both Forza and
+  BeamNG modes.
+- **GUI creates the config on launch.** The existence-check that `run` already
+  does now also runs when the GUI starts, so the defaults `config.toml` is written
+  the first time you open the app — not just on first CLI run.
+
+## 0.0.29
+- **Config file is created with defaults when missing.** `underscore run` now
+  writes a fully-populated `config.toml` of defaults the first time it starts if
+  none exists, so there's always a documented file to edit. Add `underscore
+  init-config` to write that defaults file on demand (`--force` to overwrite an
+  existing one), and a global `--config PATH` flag to read/write/create the
+  config at a location of your choosing instead of the default
+  `~/.config/underscore/config.toml`.
+
 ## 0.0.28
 - **Inside a duck-zone, ducking now beats the pause policy.** Previously a game
   pause would override geofence ducking; now, while you're parked in a saved spot,
