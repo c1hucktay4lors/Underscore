@@ -4,6 +4,13 @@ All notable changes to Underscore. Versions are pre-1.0 while the project
 stabilises; the patch number bumps with each meaningful change. Numbering starts
 from when the GUI work began (earlier CLI-only history is not versioned here).
 
+## 0.0.34
+- **Fix: the settings scroll area no longer clips the right edge.** 0.0.33's scroll
+  panel could collapse narrower than the controls needed, cutting off buttons and
+  slider values. The panel now pins its minimum width to the content's real size
+  hint (re-measured once shown), keeps an as-needed horizontal scrollbar as a
+  backstop, and the window opens wider by default — so nothing is cut off.
+
 ## 0.0.33
 - **GUI: the settings panel scrolls.** With all the sliders the panel could grow
   taller than a 1080p screen; the settings now sit in a scroll area, while the

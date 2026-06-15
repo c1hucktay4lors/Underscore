@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QPushButton, QLabel, QComboBox,
     QSlider, QGroupBox, QFormLayout, QVBoxLayout, QHBoxLayout, QGridLayout,
     QProgressBar, QPlainTextEdit, QMessageBox, QSystemTrayIcon, QMenu,
-    QTabWidget, QTextBrowser, QCheckBox, QScrollArea, QFrame,
+    QTabWidget, QTextBrowser, QCheckBox, QScrollArea, QFrame, QStyle,
 )
 
 from underscore import (
@@ -281,15 +281,22 @@ class MainWindow(QMainWindow):
         f_det.addRow("Hangover", self.sld_hang)
         slay.addWidget(g_det)
 
-        # The settings can be taller than a 1080p screen, so let them scroll while
-        # the header (controls + meters) and the log below stay put.
-        settings_scroll = QScrollArea()
-        settings_scroll.setWidgetResizable(True)
-        settings_scroll.setFrameShape(QFrame.NoFrame)
-        settings_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        settings_scroll.setWidget(self.settings)
-        settings_scroll.setMinimumHeight(220)
-        root.addWidget(settings_scroll, 3)
+        # The settings can be taller than a 1080p screen, so let them scroll
+        # vertically while the header (controls + meters) and the log stay put.
+        # Crucially, the panel must never get narrower than the controls need, or
+        # the right edge (buttons, slider values) clips — so we pin its minimum
+        # width to the content's own size hint plus room for the scrollbar.
+        self.settings_scroll = QScrollArea()
+        self.settings_scroll.setWidgetResizable(True)
+        self.settings_scroll.setFrameShape(QFrame.NoFrame)
+        # as-needed (not off) is a safety net: if anything is still too wide it
+        # scrolls instead of clipping.
+        self.settings_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.settings_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.settings_scroll.setWidget(self.settings)
+        self.settings_scroll.setMinimumHeight(220)
+        self._fit_settings_width()
+        root.addWidget(self.settings_scroll, 3)
 
         # footer: save / reload
         footer = QHBoxLayout()
@@ -325,6 +332,19 @@ class MainWindow(QMainWindow):
         self._apply_tooltips(f_audio, f_duck, f_det)
         self._refresh_players()
         self._refresh_monitors()
+
+    def _fit_settings_width(self):
+        """Pin the scroll panel's minimum width to the content's natural width plus
+        the scrollbar, so the right edge (buttons, slider values) never clips. Only
+        ever grows, and re-runs once shown when real size hints are known."""
+        sb = self.style().pixelMetric(QStyle.PixelMetric.PM_ScrollBarExtent)
+        need = self.settings.sizeHint().width() + sb + 6
+        if need > self.settings_scroll.minimumWidth():
+            self.settings_scroll.setMinimumWidth(need)
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        self._fit_settings_width()
 
     def _apply_tooltips(self, f_audio, f_duck, f_det):
         """Attach hover help to each control (and its form-row label)."""
@@ -854,7 +874,7 @@ def main() -> int:
     app.setDesktopFileName("underscore")
     app.setWindowIcon(app_icon())
     win = MainWindow()
-    win.resize(440, 720)
+    win.resize(580, 760)
     win.show()
     return app.exec()
 
