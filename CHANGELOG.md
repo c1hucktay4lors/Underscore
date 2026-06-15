@@ -4,6 +4,16 @@ All notable changes to Underscore. Versions are pre-1.0 while the project
 stabilises; the patch number bumps with each meaningful change. Numbering starts
 from when the GUI work began (earlier CLI-only history is not versioned here).
 
+## 0.0.33
+- **GUI: the settings panel scrolls.** With all the sliders the panel could grow
+  taller than a 1080p screen; the settings now sit in a scroll area, while the
+  header (controls + meters) and the log stay put.
+- **GUI: every slider now has hover help.** Filled in the tooltips that were
+  missing — Pause Method, Resume Hold, Pause Confirm, the parked/garage and
+  geofence controls, Garage Dwell, Game, and Announce-each-track.
+- **GUI: the in-app Guide is current** — added garage ducking (idle + saved spots,
+  per-title zones, dwell), Generic mode (any game or media), and Now Playing.
+
 ## 0.0.32
 - **Generic mode — `--game generic`** (or **Generic** in the GUI's Game dropdown).
   The speech detector was never really Forza-specific; only the state-aware extras

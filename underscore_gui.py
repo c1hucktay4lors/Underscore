@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QPushButton, QLabel, QComboBox,
     QSlider, QGroupBox, QFormLayout, QVBoxLayout, QHBoxLayout, QGridLayout,
     QProgressBar, QPlainTextEdit, QMessageBox, QSystemTrayIcon, QMenu,
-    QTabWidget, QTextBrowser, QCheckBox,
+    QTabWidget, QTextBrowser, QCheckBox, QScrollArea, QFrame,
 )
 
 from underscore import (
@@ -211,10 +211,6 @@ class MainWindow(QMainWindow):
         self.cmb_game = QComboBox()
         for label, _val in GAMES:
             self.cmb_game.addItem(label)
-        self.cmb_game.setToolTip("Pick your Horizon title so its garage zones stay "
-                                 "separate from the other titles' (FH4/5/6 share a "
-                                 "packet format, so this can't be auto-detected). "
-                                 "Auto-detect still finds BeamNG vs Forza.")
         f_audio.addRow("Game", self.cmb_game)
 
         self.cmb_monitor = QComboBox()
@@ -271,9 +267,6 @@ class MainWindow(QMainWindow):
         self.sld_geofence_radius = FloatSlider(5.0, 100.0, 1.0, "{:.0f}", " u")
         f_duck.addRow("Geofence Size", self.sld_geofence_radius)
         self.sld_geofence_enter = FloatSlider(0.0, 5.0, 0.5, "{:.1f}", " s")
-        self.sld_geofence_enter.setToolTip("Dwell time inside a saved spot before "
-                                           "ducking, so just driving through it does "
-                                           "nothing.")
         f_duck.addRow("Garage Dwell", self.sld_geofence_enter)
         slay.addWidget(g_duck)
 
@@ -288,7 +281,15 @@ class MainWindow(QMainWindow):
         f_det.addRow("Hangover", self.sld_hang)
         slay.addWidget(g_det)
 
-        root.addWidget(self.settings)
+        # The settings can be taller than a 1080p screen, so let them scroll while
+        # the header (controls + meters) and the log below stay put.
+        settings_scroll = QScrollArea()
+        settings_scroll.setWidgetResizable(True)
+        settings_scroll.setFrameShape(QFrame.NoFrame)
+        settings_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        settings_scroll.setWidget(self.settings)
+        settings_scroll.setMinimumHeight(220)
+        root.addWidget(settings_scroll, 3)
 
         # footer: save / reload
         footer = QHBoxLayout()
@@ -394,6 +395,44 @@ class MainWindow(QMainWindow):
             "How long to keep ducking after speech stops, so short gaps between "
             "words don't pop your music back up mid-sentence.",
             f_det)
+
+        # ---- controls that previously had no hover help ----
+        tip(self.chk_now_playing,
+            "Pop a desktop notification with the artist and title each time your "
+            "music moves to a new track (off by default).", f_audio)
+        tip(self.cmb_game,
+            "Auto-detect finds BeamNG vs Forza on its own. Name your Horizon title "
+            "(FH4/5/6) so its garage zones stay separate from the other titles' — "
+            "they share a packet format, so the title can't be detected. Pick "
+            "Generic for VAD-only ducking on any other game or media (no telemetry).",
+            f_audio)
+        tip(self.cmb_method,
+            "Used by the 'pause' policy. mute just drops the volume (no resume "
+            "blip, the track keeps playing); transport sends a real pause/play so "
+            "the track freezes and resumes where it left off.", f_duck)
+        tip(self.sld_resume_hold,
+            "A brief hold at silence right after un-pausing, to swallow the volume "
+            "blip some players make when they resume. Raise it only if you still "
+            "hear a pop on resume.", f_duck)
+        tip(self.sld_pause_confirm,
+            "How long a pause must hold before the music actually pauses. Filters "
+            "the split-second telemetry drop when you swap cars in the garage.",
+            f_duck)
+        tip(self.chk_idle,
+            "Forza: dim the music whenever the car is stopped for a moment "
+            "(anywhere), e.g. parked or sitting in the garage.", f_duck)
+        tip(self.sld_idle_grace,
+            "How long the car must be stationary before idle-ducking kicks in.",
+            f_duck)
+        tip(self.chk_geofence,
+            "Forza: dim the music only at spots you've saved with Mark Current "
+            "Spot — your garages — and nowhere else.", f_duck)
+        tip(self.sld_geofence_radius,
+            "How big each saved spot's trigger box is (world units on each axis). "
+            "Smaller keeps it tight to the exact parking spot.", f_duck)
+        tip(self.sld_geofence_enter,
+            "How long you must sit inside a saved spot before it ducks, so merely "
+            "driving through the spot doesn't dip the music.", f_duck)
 
     # -- config <-> widgets ---------------------------------------------------
     def _cfg_to_widgets(self, c: Config):
@@ -693,13 +732,19 @@ class MainWindow(QMainWindow):
     def _guide_html(self) -> str:
         return f"""
         <h2>Underscore</h2>
-        <p><i>Audio-side dialogue ducker for Forza Horizon on Linux.</i></p>
+        <p><i>Audio-side dialogue ducker for Linux &mdash; built around Forza
+        Horizon, but works with any game or media.</i></p>
 
         <h3>How it works</h3>
         <p>Underscore captures the game's audio from a PipeWire monitor and runs it
         through a speech-detection model. When in-game dialogue starts it fades your
         music down, then brings it back when the talking stops &mdash; it listens to
         the game's <i>audio</i>, so no mods or game telemetry are needed.</p>
+        <p>That speech detection isn't tied to Forza, or to games at all. The Forza
+        and BeamNG telemetry only powers the extras below (pausing in menus, ducking
+        in the garage). For anything else &mdash; a different game, a stream, a video,
+        a film in the background &mdash; pick <b>Generic</b> as the Game and it just
+        ducks on speech (see below).</p>
 
         <h3>Getting game-only audio (recommended)</h3>
         <p>Capturing your default output works, but it also hears your music, which can
@@ -725,6 +770,34 @@ class MainWindow(QMainWindow):
           <li><b>never</b> &mdash; never duck in menus.</li>
           <li><b>pause</b> &mdash; pause the music entirely in menus.</li>
         </ul>
+
+        <h3>Ducking in the garage (Forza)</h3>
+        <p>Forza streams telemetry even while parked, so Underscore can dim your music
+        when you're stopped &mdash; handy for hearing engine previews or browsing menus.
+        Two ways, usable together:</p>
+        <ul>
+          <li><b>Duck when parked</b> &mdash; dims whenever the car is stationary for a
+              moment, <i>anywhere</i> (so it also dips at a stoplight).</li>
+          <li><b>Duck inside saved spots</b> &mdash; dims only at places you record with
+              <b>Mark Current Spot</b>, so the open road is left alone. You must sit in a
+              spot for the <b>Garage Dwell</b> time before it ducks, so driving through a
+              marked spot does nothing.</li>
+        </ul>
+        <p>Saved spots are tagged with the <b>Game</b> you marked them in. Forza Horizon
+        4, 5 and 6 are different maps, so set the right title before marking and only
+        that title's spots will trigger. Inside a saved spot, ducking wins over the pause
+        policy, so swapping cars stays smoothly ducked instead of pausing.</p>
+
+        <h3>Any game or media (Generic)</h3>
+        <p>Set <b>Game</b> to <b>Generic</b> to turn telemetry off and simply duck your
+        music whenever speech is heard &mdash; for any other game, or any media at all
+        (a Twitch stream, a YouTube video, a film). Just point the Game Monitor at the
+        audio you want it to listen to.</p>
+
+        <h3>Now Playing notifications</h3>
+        <p>Tick <b>Announce each new track</b> to get an EA-TRAX-style desktop popup with
+        the artist and title whenever your music changes songs. Off by default; works in
+        every mode.</p>
 
         <h3>BeamNG.drive (media-sync)</h3>
         <p>If Underscore sees BeamNG's OutGauge telemetry it switches automatically to

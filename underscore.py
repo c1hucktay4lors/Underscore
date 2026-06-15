@@ -100,7 +100,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-__version__ = "0.0.32"
+__version__ = "0.0.33"
 
 SINK_NAME = "underscore_game"
 SAMPLE_RATE = 16000
