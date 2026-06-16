@@ -122,10 +122,12 @@ Capturing your default output works, but it also hears your music, which can
 false-trigger on vocals. To feed Underscore *only* the game:
 
 1. `underscore setup` — creates an **Underscore_Game** virtual sink.
-2. Route the game's audio into it. KDE: use the audio applet's per-app output.
-   GNOME: install `pavucontrol` (GNOME Settings can't route per-app) and, in its
+2. Route the game's audio into it: 
+- **KDE**: use the audio applet's per-app output.
+- **All other DEs/WMs**: install `pavucontrol` *(Most can't route per-app, if they can without this let me know!)*
+3.  Then in its
    **Playback** tab, set the game's output device to **Underscore_Game**.
-3. Capture `underscore_game.monitor` (the default after `setup`).
+4. Capture `underscore_game.monitor` (the default after `setup`).
 
 Now your music plays to your real speakers untouched while Underscore listens to
 the game alone.
