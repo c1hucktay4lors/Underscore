@@ -1,6 +1,6 @@
 <div align="center">
   
-## This is a primairly AI-created app.
+## This is a primairly AI-created program.
 ### If that's not your speed, no worries. Just warning you before you get too far into it
 </div>
 <br/>
