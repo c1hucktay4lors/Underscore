@@ -76,7 +76,6 @@ Author / credits
 ----------------
 Created by c1hucktay4lors, developed in close collaboration with Claude
 (Anthropic). Speech detection uses the Silero VAD model (silero-vad, MIT).
-Independent Linux project; not affiliated with the Windows app "Segue".
 
 Licensed under the MIT License — see the LICENSE file.
 """
