@@ -34,7 +34,7 @@ from underscore import (
 
 MENU_POLICIES = ["speech", "always", "never", "pause"]
 PAUSE_SCOPES = ["from-gameplay", "all-menus"]
-PAUSE_METHODS = ["mute", "transport"]
+PAUSE_METHODS = ["mute", "pause"]
 # (label, config value) — title matters for keeping each game's garage zones apart
 GAMES = [("Auto-detect", "auto"), ("Forza Horizon 6", "fh6"),
          ("Forza Horizon 5", "fh5"), ("Forza Horizon 4", "fh4"),
@@ -258,11 +258,11 @@ class MainWindow(QMainWindow):
         f_duck.addRow("Attack", self.sld_attack)
         self.sld_release = FloatSlider(0.1, 3.0, 0.1, "{:.1f}", " s")
         f_duck.addRow("Release", self.sld_release)
-        self.chk_idle = QCheckBox("Duck when parked / in garage (Forza)")
+        self.chk_idle = QCheckBox("Duck when idle (Forza)")
         f_duck.addRow(self.chk_idle)
         self.sld_idle_grace = FloatSlider(1.0, 15.0, 0.5, "{:.1f}", " s")
         f_duck.addRow("Idle Timeout", self.sld_idle_grace)
-        self.chk_geofence = QCheckBox("Duck inside saved spots / geofences (Forza)")
+        self.chk_geofence = QCheckBox("Duck inside saved spots/geofences (Forza)")
         f_duck.addRow(self.chk_geofence)
         self.sld_geofence_radius = FloatSlider(5.0, 100.0, 1.0, "{:.0f}", " u")
         f_duck.addRow("Geofence Size", self.sld_geofence_radius)
@@ -428,7 +428,7 @@ class MainWindow(QMainWindow):
             f_audio)
         tip(self.cmb_method,
             "Used by the 'pause' policy. mute just drops the volume (no resume "
-            "blip, the track keeps playing); transport sends a real pause/play so "
+            "blip, the track keeps playing); pause sends a real pause/play so "
             "the track freezes and resumes where it left off.", f_duck)
         tip(self.sld_resume_hold,
             "A brief hold at silence right after un-pausing, to swallow the volume "

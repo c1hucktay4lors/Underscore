@@ -76,6 +76,7 @@ Author / credits
 ----------------
 Created by c1hucktay4lors, developed in close collaboration with Claude
 (Anthropic). Speech detection uses the Silero VAD model (silero-vad, MIT).
+Independent Linux project; not affiliated with the Windows app "Segue".
 
 Licensed under the MIT License — see the LICENSE file.
 """
@@ -146,7 +147,7 @@ class Config:
     attack: float = 0.12              # fade-down time (s)
     release: float = 0.9              # fade-up time (s)
     resume_fade: float = 2.0          # pause→play fade-in (s)
-    pause_method: str = "mute"        # mute (volume-only, no blip) | transport (real Pause/Play)
+    pause_method: str = "mute"        # mute (volume-only, no blip) | mute (real Pause/Play)
     resume_hold: float = 0.2          # force-mute window across player vol reset (s)
     pause_confirm: float = 0.7        # pause must persist this long before pausing
     hangover: float = 1000.0          # keep ducking after speech drops (ms)
@@ -1725,7 +1726,7 @@ class Engine:
         its PipeWire stream is named or whether it exposes a PID. The trade-off
         is that the track keeps advancing silently while paused. 'transport' mode
         sends a real Pause (track freezes) and tries the stream-mute gate."""
-        if self.cfg.pause_method == "transport":
+        if self.cfg.pause_method == "pause":
             self._vol.pause()
         self._fader.snap(0.0)
 
@@ -2216,9 +2217,9 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--attack", type=float, default=0.12, help="Fade-down time (s)")
     r.add_argument("--release", type=float, default=0.9,
                    help="Fade-up time after speech ends (s)")
-    r.add_argument("--pause-method", choices=["mute", "transport"], default="mute",
+    r.add_argument("--pause-method", choices=["mute", "pause"], default="mute",
                    help="'pause' policy: mute = volume-only, never sends Pause/Play "
-                        "(no resume blip; track advances). transport = real "
+                        "(no resume blip; track advances). pause = real "
                         "Pause/Play (track freezes; may blip on some players)")
     r.add_argument("--resume-fade", type=float, default=2.0,
                    help="'pause' policy: fade-in time when resuming from a pause (s)")
