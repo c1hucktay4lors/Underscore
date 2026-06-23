@@ -243,7 +243,7 @@ the GUI**. Use a different location with the global `--config PATH` flag (e.g.
 | `--game-monitor NAME` | PipeWire monitor to capture |
 | `--volume-backend {auto,mpris,playerctl,pactl}` | How to control volume (default `auto`) |
 | `--menu-policy {speech,always,never,pause}` | Behavior in menus (default `speech`) |
-| `--pause-method {mute,transport}` | `pause` policy: `mute` = volume-only, no resume blip (track runs on); `pause` = real Pause/Play (track freezes) |
+| `--pause-method {mute,pause}` | `pause` policy: `mute` = volume-only, no resume blip (track runs on); `pause` = real Pause/Play (track freezes) |
 | `--idle-duck` · `--idle-grace S` · `--idle-speed M` | Duck when parked anywhere (see above) |
 | `--geofence-duck` · `--geofence-radius U` · `--geofence-enter-grace S` · `--geofence-pause-grace S` | Duck only inside saved spots (see above) |
 | `--game {auto,fh4,fh5,fh6,forza,generic,beamng}` | Game/title. Auto-detects BeamNG vs Forza; a Horizon title keeps its garage zones separate; `generic` = VAD-only ducking for any game or media (no telemetry) |
