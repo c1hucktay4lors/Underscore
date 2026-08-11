@@ -221,14 +221,14 @@ Underscore assumes you've left for a menu and normal pause behavior resumes.
 
 ## BeamNG.drive integration
 
-BeamNG has two layers of integration with Underscore: basic RPM-based ducking via OutGauge telemetry, and an optional Lua mod that broadcasts ignition state for true radio-to-play behavior.
+BeamNG has two layers of integration with Underscore: basic RPM-based play/pause via OutGauge telemetry, and an optional Lua mod that broadcasts ignition state for true 'radio'-style behavior.
 
 ### Basic mode (OutGauge only)
 
-With just the [OutGauge](https://github.com/BeamNG/outgauge) mod enabled in BeamNG, Underscore reads RPM over UDP port 4444 and:
+With just **OutGauge** enabled in BeamNG, Underscore reads RPM over UDP port 4444 and:
 
-- Ducks music when RPM is high (engine running, you're driving)
-- Resumes music when RPM drops to zero for a few seconds (car off or paused)
+- Plays music when RPM is high (engine running, you're driving)
+- Stops music when RPM drops to zero for a few seconds (car off or paused)
 
 This works out of the box — no extra setup needed beyond enabling OutGauge in-game. Run with `--game beamng` and Underscore auto-detects it.
 
@@ -246,7 +246,8 @@ OutGauge alone can't distinguish between "key off" and "accessory power on" — 
 **Installation:**
 
 1. Copy `Underscore-BeamNG-hybrid.zip` from this repo into your BeamNG mods folder:
-   - Linux: `~/.local/share/BeamNG/BeamNG.drive/current/mods/`
+   - Linux Native: `~/.local/share/BeamNG/BeamNG.drive/current/mods/`
+   - Linux Proton: `<SteamLibrary>/steamapps/compatdata/284160/pfx/drive_c/users/steamuser/AppData/Local/BeamNG/BeamNG.drive/current/mods/`
 2. In-game, go to **Mods** tab and enable **Underscore-BeamNG-hybrid**.
 3. Run Underscore with `--game beamng`.
 
@@ -323,6 +324,6 @@ Run `underscore run --help` for the full list (thresholds, fades, ports, offsets
 
 ## Credits & License
 
-Created by **c1hucktay4lors** with the use of AI (Claude, Qwen MCP Agent on `llm-test` branch).
+Created by **c1hucktay4lors** with the use of AI (Claude, [Qwen3.6 27B Fable-Fusion 711](https://huggingface.co/DavidAU/Qwen3.6-27B-Fable-Fusion-711-Uncensored-Heretic-NM-DAU-NEO-MAX-MTP-GGUF) on `llm-test` branch).
 Speech detection uses the [Silero VAD](https://github.com/snakers4/silero-vad)
 model (MIT). Licensed under the **MIT License** - see [LICENSE](LICENSE).
