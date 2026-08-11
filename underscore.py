@@ -125,6 +125,7 @@ OUTGAUGE_SIZE = 96
 OUTGAUGE_FORMAT = "<I4sHbbfffffffIIfff16s16si"
 OUTGAUGE_RPM_IDX = 6
 BEAMNG_RPM_MIN = 50.0
+IGNITION_PORT = 4445          # BeamNG ignition broadcast port (mod: Underscore-BeamNG)
 
 GAMEPLAY, MENU, PAUSED, NO_SIGNAL = "GAMEPLAY", "MENU", "PAUSED", "NO_SIGNAL"
 DRIVING, STOPPED = "DRIVING", "STOPPED"
@@ -147,7 +148,7 @@ class Config:
     attack: float = 0.12              # fade-down time (s)
     release: float = 0.9              # fade-up time (s)
     resume_fade: float = 2.0          # pause→play fade-in (s)
-    pause_method: str = "mute"        # mute (volume-only, no blip) | mute (real Pause/Play)
+    pause_method: str = "mute"        # mute (volume to 0, track keeps playing) | pause (real transport Pause/Play)
     resume_hold: float = 0.2          # force-mute window across player vol reset (s)
     pause_confirm: float = 0.7        # pause must persist this long before pausing
     hangover: float = 1000.0          # keep ducking after speech drops (ms)
@@ -156,6 +157,7 @@ class Config:
     no_telemetry: bool = False        # disable the state machine
     game: str = "auto"                # auto | fh4 | fh5 | fh6 | forza | beamng
     beamng_port: int = 4444           # BeamNG OutGauge UDP port
+    ignition_port: int = 4445        # BeamNG ignition broadcast port (mod)
     idle_duck: bool = False           # Forza: duck when stopped (garage / parked)
     idle_grace: float = 4.0           # seconds stationary before idle-duck kicks in
     idle_speed: float = 1.0           # m/s at or below which the car counts as stopped
@@ -1167,6 +1169,69 @@ class BeamNGTelemetry:
             pass
 
 
+
+
+# ── BeamNG Ignition Listener (mod integration) ────────────────────────────────
+class BeamNGIgnitionListener:
+    """Listens for ignition state broadcasts from the Underscore-BeamNG mod.
+
+    The mod runs inside BeamNG and broadcasts a single byte per packet on UDP
+    port 4445 (configurable):
+        0 = key off
+        1 = accessory (radio on, engine off)
+        2 = ignition on / engine running
+        3 = cranking
+
+    This lets underscore distinguish 'key in accessory' from 'key off', which
+    OutGauge telemetry alone cannot express (both show RPM=0). Accessory mode
+    keeps music playing; key-off pauses it.
+
+    The mod is optional: if no packets arrive, underscore falls back to the
+    original OutGauge RPM-based behavior. No crash, no hard dependency."""
+
+    def __init__(self, port: int = IGNITION_PORT, timeout: float = 0.3):
+        self.level = None           # last seen level (0-3) or None if never seen
+        self._last_rx = 0.0         # monotonic time of last packet
+        self._port = port
+        self._running = True
+        self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            self._sock.bind(("127.0.0.1", port))  # only localhost; mod sends here
+            # Bound successfully; will silently receive packets in background
+        except OSError as e:
+            logging.warning("Ignition listen :%d failed (%s).", port, e)
+        self._sock.settimeout(timeout)
+        self._t = threading.Thread(target=self._loop, daemon=True)
+        self._t.start()
+
+    def _loop(self) -> None:
+        while self._running:
+            try:
+                data, _ = self._sock.recvfrom(4)  # single byte expected
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            if len(data) >= 1:
+                lvl = data[0] & 0xFF
+                self._last_rx = time.monotonic()
+                self.level = lvl
+                if self.level != lvl:
+                    logging.debug("Ignition level changed to %d", lvl)
+
+    @property
+    def alive(self) -> bool:
+        """True if we've seen a packet within the last 2 seconds."""
+        return (time.monotonic() - self._last_rx) < 2.0
+
+    def stop(self) -> None:
+        self._running = False
+        try:
+            self._sock.close()
+        except OSError:
+            pass
+
+
 # ── Fader (drives any volume backend) ───────────────────────────────────────--
 class Fader:
     def __init__(self, set_fn: Callable[[float], None], attack: float,
@@ -1505,6 +1570,7 @@ class Engine:
         self._tele = None
         self._cap = None
         self._beam = None
+        self._ignition = None
         self._mode = "forza"
         self._base = 1.0
         self._music_paused = False
@@ -1550,6 +1616,10 @@ class Engine:
                             f"transport — '{vol.name}' doesn't have it. Use the "
                             f"mpris or playerctl backend.")
                 self._beam = beam
+                # BeamNG mode always uses real transport Pause/Play (not volume-mute)
+                cfg.pause_method = "pause"
+                # Optional: ignition broadcast from Underscore-BeamNG mod
+                self._ignition = BeamNGIgnitionListener(cfg.ignition_port)
                 self._mode = "beamng"
                 self._fader = Fader(vol.set, cfg.attack, cfg.release, self._base)
                 self.status.update(running=True, mode="beamng", backend=vol.name,
@@ -1559,8 +1629,13 @@ class Engine:
                 self._stop.clear()
                 self._thread = threading.Thread(target=self._run_beamng, daemon=True)
                 self._thread.start()
-                logging.info("BeamNG detected on :%d — media-sync mode "
-                             "(music pauses when you're not driving).", cfg.beamng_port)
+                # Wait briefly for ignition mod to announce itself
+                time.sleep(0.5)
+                ign_alive = self._ignition.alive
+                ign_lvl = self._ignition.level if ign_alive else None
+                ign_status = f"ignition mod active (level={ign_lvl})" if ign_alive else "ignition mod not seen yet (optional)"
+                logging.info("BeamNG detected on :%d — media-sync mode (pause_method=%s, %s)",
+                             cfg.beamng_port, cfg.pause_method, ign_status)
                 _notify("BeamNG detected", "Media-sync mode — music follows driving.")
                 self._emit()
                 return None
@@ -1663,6 +1738,8 @@ class Engine:
                 self._tele.stop()
             if self._beam:
                 self._beam.stop()
+            if self._ignition:
+                self._ignition.stop()
             if self._music_paused and self._vol:
                 self._vol.play()
                 self._music_paused = False
@@ -1679,6 +1756,7 @@ class Engine:
                     except Exception:
                         pass
             self._tele = self._fader = self._cap = self._beam = None
+            self._ignition = None
 
     def _emit(self) -> None:
         if self.on_status:
@@ -1769,18 +1847,45 @@ class Engine:
 
     def _run_beamng(self) -> None:
         """Media-sync loop: pause the music when you're not driving (sim paused,
-        on-foot, or engine off), resume it when you are. No audio is captured."""
+        on-foot, or engine off), resume it when you are. No audio is captured.
+
+        If the Underscore-BeamNG mod is installed and broadcasting ignition state,
+        we use that to distinguish accessory mode (radio on, engine off) from key-off.
+        Accessory keeps music playing; key-off pauses it. Falls back to OutGauge RPM
+        behavior if no ignition packets are seen."""
         cfg = self.cfg
-        vol, fader, beam, base = self._vol, self._fader, self._beam, self._base
+        vol, fader, beam, ign, base = self._vol, self._fader, self._beam, self._ignition, self._base
         self._music_paused = False
         not_driving_since = None
         pause_delay = 1.0          # hold off this long before pausing (respawns, etc.)
+        last_ign_lvl = None        # track changes for logging
+
+        IGN_NAMES = {0: "OFF", 1: "ACC", 2: "IGN ON", 3: "CRANKING"}
 
         while not self._stop.is_set():
             now = time.monotonic()
             self._poll_now_playing(now)
             self.status["rpm"] = round(beam.rpm)
-            driving = beam.driving
+
+            cranking = False       # level 3: starter engaged — cut audio instantly
+            # Prefer ignition mod if alive; fall back to OutGauge RPM path
+            if ign and ign.alive:
+                lvl = ign.level
+                self.status["ignition_level"] = lvl
+                # Log ignition state changes with radio behavior
+                if lvl != last_ign_lvl:
+                    radio_state = "on" if lvl in (1, 2) else "off"
+                    logging.info("ignition %s (level=%d) ('Radio' %s)", IGN_NAMES.get(lvl, "?"), lvl, radio_state)
+                    last_ign_lvl = lvl
+                cranking = (lvl == 3)
+                # Level 3 (cranking) pauses music like a real car starter cuts the radio
+                driving = (lvl is not None and lvl >= 1 and lvl != 3)
+            else:
+                self.status.pop("ignition_level", None)
+                if last_ign_lvl is not None:
+                    logging.info("ignition mod lost")
+                    last_ign_lvl = None
+                driving = beam.driving
 
             if self._override:                          # override = always play
                 if self._music_paused:
@@ -1795,7 +1900,6 @@ class Engine:
             if driving:
                 not_driving_since = None
                 if self._music_paused:
-                    logging.info("driving — resuming music")
                     self._do_resume()
                     self._music_paused = False
                     self.status["paused"] = False
@@ -1804,8 +1908,9 @@ class Engine:
             else:
                 if not_driving_since is None:
                     not_driving_since = now
-                if (now - not_driving_since) >= pause_delay and not self._music_paused:
-                    logging.info("not driving — pausing music")
+                # Cranking cuts audio immediately (no delay); key-off uses normal grace period
+                effective_delay = 0.0 if cranking else pause_delay
+                if (now - not_driving_since) >= effective_delay and not self._music_paused:
                     self._do_pause()
                     self._music_paused = True
                     self.status["paused"] = True
@@ -2015,6 +2120,7 @@ def config_from_args(args: argparse.Namespace) -> Config:
         hangover=args.hangover, pause_grace=args.pause_grace,
         port=args.port, no_telemetry=args.no_telemetry,
         game=args.game, beamng_port=args.beamng_port,
+        ignition_port=args.ignition_port,
         idle_duck=args.idle_duck, idle_grace=args.idle_grace,
         idle_speed=args.idle_speed, speed_offset=args.speed_offset,
         geofence_duck=args.geofence_duck, geofence_radius=args.geofence_radius,
@@ -2247,6 +2353,8 @@ def build_parser() -> argparse.ArgumentParser:
                         "(no telemetry; just ducks when speech is heard)")
     r.add_argument("--beamng-port", type=int, default=4444,
                    help="BeamNG OutGauge UDP port (media-sync mode)")
+    r.add_argument("--ignition-port", type=int, default=4445,
+                   help="BeamNG ignition broadcast port (mod; distinguishes accessory from off)")
     r.add_argument("--idle-duck", action="store_true",
                    help="Forza: duck the music when parked/in the garage "
                         "(sustained near-zero speed)")
