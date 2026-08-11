@@ -47,7 +47,11 @@ Underscore also uses Forza Horizon's Data Out feature to implement feature that 
 
 Like mentioned earlier, the VAD is not tied to any telemetry data, or to games at all - it just listens
 to an audio stream and ducks on voice. The Forza (and BeamNG) telemetry only powers
-the *state-aware* extras. For anything else - a different game, a Twitch stream, a YouTube video, a film in
+the *state-aware* extras.
+
+For **BeamNG.drive**, Underscore also supports an optional Lua mod that broadcasts ignition state over UDP, enabling true radio-to-play behavior: music plays when the key is in ACC or IGN ON position, pauses after a short grace period when turned off, and cuts instantly during cranking — matching how real car radios behave. See **BeamNG.drive integration** below for setup details.
+
+For anything else - a different game, a Twitch stream, a YouTube video, a film in
 the background - run **`--game generic`** (or pick **Generic** in the GUI) and
 Underscore ducks your music whenever it hears speech, with no telemetry involved.
 
@@ -215,6 +219,46 @@ Underscore assumes you've left for a menu and normal pause behavior resumes.
 
 ---
 
+## BeamNG.drive integration
+
+BeamNG has two layers of integration with Underscore: basic RPM-based ducking via OutGauge telemetry, and an optional Lua mod that broadcasts ignition state for true radio-to-play behavior.
+
+### Basic mode (OutGauge only)
+
+With just the [OutGauge](https://github.com/BeamNG/outgauge) mod enabled in BeamNG, Underscore reads RPM over UDP port 4444 and:
+
+- Ducks music when RPM is high (engine running, you're driving)
+- Resumes music when RPM drops to zero for a few seconds (car off or paused)
+
+This works out of the box — no extra setup needed beyond enabling OutGauge in-game. Run with `--game beamng` and Underscore auto-detects it.
+
+### Ignition broadcast mod (recommended)
+
+OutGauge alone can't distinguish between "key off" and "accessory power on" — both show RPM = 0. The optional Lua mod solves this by broadcasting ignition state over UDP port 4445, so Underscore behaves like a real car radio:
+
+| Ignition level | Behavior |
+|----------------|----------|
+| **OFF (0)**    | Pauses music after 1s grace period |
+| **ACC (1)**    | Music plays ("radio on") |
+| **IGN ON (2)** | Music plays ("radio on") |
+| **CRANKING (3)** | Cuts audio instantly (like real starter engagement) |
+
+**Installation:**
+
+1. Copy `Underscore-BeamNG-hybrid.zip` from this repo into your BeamNG mods folder:
+   - Linux: `~/.local/share/BeamNG/BeamNG.drive/current/mods/`
+2. In-game, go to **Mods** tab and enable **Underscore-BeamNG-hybrid**.
+3. Run Underscore with `--game beamng`.
+
+The mod broadcasts a heartbeat every ~1 second. If it's not active (mod disabled or not installed), Underscore silently falls back to RPM-only behavior — no errors, no hard dependency.
+
+**Configuration:**
+
+- `--ignition-port PORT` — UDP port for ignition broadcast (default: 4445)
+- The mod always uses `pause_method = "pause"` internally so music actually pauses/resumes via MPRIS transport controls instead of just fading volume to zero.
+
+---
+
 ## Now Playing notifications (EA TRAX style)
 
 Turn on **Announce each new track** in the GUI (or pass `--now-playing`) and
@@ -246,7 +290,8 @@ the GUI**. Use a different location with the global `--config PATH` flag (e.g.
 | `--pause-method {mute,pause}` | `pause` policy: `mute` = volume-only, no resume blip (track runs on); `pause` = real Pause/Play (track freezes) |
 | `--idle-duck` · `--idle-grace S` · `--idle-speed M` | Duck when parked anywhere (see above) |
 | `--geofence-duck` · `--geofence-radius U` · `--geofence-enter-grace S` · `--geofence-pause-grace S` | Duck only inside saved spots (see above) |
-| `--game {auto,fh4,fh5,fh6,forza,generic,beamng}` | Game/title. Auto-detects BeamNG vs Forza; a Horizon title keeps its garage zones separate; `generic` = VAD-only ducking for any game or media (no telemetry) |
+| `--game {auto,fh4,fh5,fh6,forza,generic,beamng}` | Game/title. Auto-detects BeamNG vs Forza; a Horizon title keeps its garage zones separate; `generic` = VAD-only ducking for any game or media (no telemetry); `beamng` = OutGauge RPM ducking + optional ignition broadcast mod support |
+| `--ignition-port PORT` | UDP port for BeamNG ignition broadcast mod (default: 4445) |
 | `--verbose` | Debug logging |
 | `--version` | Print version |
 
@@ -278,6 +323,6 @@ Run `underscore run --help` for the full list (thresholds, fades, ports, offsets
 
 ## Credits & License
 
-Created by **c1hucktay4lors** with the use of AI (mainly Claude).
+Created by **c1hucktay4lors** with the use of AI (Claude, Qwen MCP Agent on `llm-test` branch).
 Speech detection uses the [Silero VAD](https://github.com/snakers4/silero-vad)
 model (MIT). Licensed under the **MIT License** - see [LICENSE](LICENSE).
