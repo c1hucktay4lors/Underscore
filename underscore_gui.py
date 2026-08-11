@@ -52,7 +52,7 @@ class FloatSlider(QWidget):
         self.slider.setMinimum(0)
         self.slider.setMaximum(int(round((hi - lo) / step)))
         self.label = QLabel()
-        self.label.setMinimumWidth(64)
+        self.label.setMinimumWidth(80)
         self.label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.slider.valueChanged.connect(self._refresh)
         lay = QHBoxLayout(self)
@@ -156,6 +156,15 @@ class MainWindow(QMainWindow):
         header.addWidget(self.btn_toggle)
         header.addWidget(self.btn_suspend)
         header.addWidget(self.lbl_state, 1)
+
+        # ignition status indicator (BeamNG only — hidden until active)
+        self.lbl_ignition = QLabel()
+        self.lbl_ignition.hide()
+        self.lbl_ignition.setStyleSheet(
+            "background: #2a2a3a; color: #e0e0e0; padding: 2px 8px; "
+            "border-radius: 4px; font-size: 11pt;")
+        header.addWidget(self.lbl_ignition)
+
         root.addLayout(header)
 
         # meters
@@ -591,9 +600,12 @@ class MainWindow(QMainWindow):
                 f.write(str(os.getpid()))
         except OSError:
             pass
-        if eng.status.get("mode") == "beamng":
-            self._append("BeamNG detected — media-sync mode: music pauses when "
-                         "you're not driving (no audio capture).")
+
+        mode = eng.status.get("mode", "")
+        if mode == "beamng":
+            ign_alive = eng._ignition.alive if hasattr(eng, "_ignition") and eng._ignition else False
+            self._append(f"BeamNG detected on :4444 — media-sync mode (pause_method=pause, "
+                         f"{'ignition mod active' if ign_alive else 'OutGauge RPM only'})")
         else:
             self._append("Running — backend %s, monitor %s"
                          % (eng.status["backend"], eng.status["monitor"]))
@@ -700,6 +712,22 @@ class MainWindow(QMainWindow):
         st = self.engine.status
         self.bar_speech.setValue(int(st.get("prob", 0.0) * 100))
         self.bar_volume.setValue(int(st.get("volume", 0.0) * 100))
+
+        # ignition status indicator (BeamNG only)
+        ign_lvl = st.get("ignition_level")
+        if ign_lvl is not None:
+            names = {0: "OFF", 1: "ACC", 2: "IGN ON", 3: "CRANKING"}
+            colors = {0: "#cc4444", 1: "#e8a63c", 2: "#5cb85c", 3: "#ff6600"}
+            name = names.get(ign_lvl, "?")
+            color = colors.get(ign_lvl, "#aaaaaa")
+            self.lbl_ignition.setText(f"⚡ {name}")
+            self.lbl_ignition.setStyleSheet(
+                f"background: #2a2a3a; color: {color}; padding: 2px 8px; "
+                f"border-radius: 4px; font-size: 11pt;")
+            if not self.lbl_ignition.isVisible():
+                self.lbl_ignition.show()
+        elif self.lbl_ignition.isVisible():
+            self.lbl_ignition.hide()
 
     # -- misc -----------------------------------------------------------------
     def _save(self):
@@ -825,6 +853,15 @@ class MainWindow(QMainWindow):
         you're not driving (game paused, on-foot, or engine off) and resumes it when you
         are. Enable OutGauge in BeamNG's options, pointed at <tt>127.0.0.1:4444</tt>.</p>
 
+        <h3>BeamNG ignition broadcast mod (recommended)</h3>
+        <p>OutGauge alone can't tell the difference between "key off" and "accessory power on" — both show RPM = 0. The optional Lua mod broadcasts ignition state over UDP port 4445, so Underscore behaves like a real car radio:</p>
+        <ul>
+          <li><b>OFF</b> — pauses music after 1s grace period</li>
+          <li><b>ACC / IGN ON</b> — music plays ("radio on")</li>
+          <li><b>CRANKING</b> — cuts audio instantly (like real starter engagement)</li>
+        </ul>
+        <p>Install by copying <tt>Underscore-BeamNG-hybrid.zip</tt> from the repo into your BeamNG mods folder and enabling it in-game. If the mod isn't active, Underscore silently falls back to RPM-only behavior.</p>
+
         <h3>Suspending ducking on the fly</h3>
         <p>Use the <b>Suspend ducking</b> button (or the tray entry) to hold the music at
         full volume and ignore speech until you toggle it back. For an in-game key, bind a
@@ -836,7 +873,7 @@ class MainWindow(QMainWindow):
         <h3>About</h3>
         <p><b>Underscore</b> {__version__}<br>
         Created by <b>c1hucktay4lors</b>, developed in close collaboration with
-        <b>Claude</b> (Anthropic).<br>
+        <b>Claude</b> (Anthropic) and <a href="https://huggingface.co/DavidAU/Qwen3.6-27B-Fable-Fusion-711-Uncensored-Heretic-NM-DAU-NEO-MAX-MTP-GGUF"><b>Qwen3.6 27B Fable-Fusion 711</b></a>.<br>
         Speech detection uses the Silero VAD model
         (<a href="https://github.com/snakers4/silero-vad">silero-vad</a>, MIT).<br>
         Licensed under the MIT License.</p>
