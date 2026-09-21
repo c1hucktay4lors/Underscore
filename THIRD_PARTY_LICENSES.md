@@ -1,17 +1,18 @@
 # Third-Party Licenses
 
-Underscore bundles the component below. Its original copyright and license
-notice is reproduced here as required by its license.
-
----
+Underscore includes the following third-party component.
 
 ## Silero VAD
 
-- Source: https://github.com/snakers4/silero-vad
-- Author: Silero Team
-- Used for: `silero_vad.onnx`, the voice activity detection model that
-  Underscore uses to detect speech
+Underscore includes the Silero VAD ONNX model:
+
+- Project: https://github.com/snakers4/silero-vad
+- Component: `silero_vad.onnx`
+- Copyright: © 2020-present Silero Team
 - License: MIT
+
+The Silero VAD model is redistributed as part of Underscore.
+Its original copyright and license terms remain applicable.
 
 MIT License
 
