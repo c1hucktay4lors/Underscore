@@ -911,7 +911,10 @@ def main() -> int:
     app.setDesktopFileName("underscore")
     app.setWindowIcon(app_icon())
     win = MainWindow()
-    win.resize(580, 760)
+    # Open wide enough that the settings panel's right edge (slider values, buttons)
+    # isn't clipped. The content is capped at 760px; add room for window chrome and
+    # margins so everything fits without horizontal scrolling on first launch.
+    win.resize(820, 760)
     win.show()
     return app.exec()
 

@@ -4,6 +4,13 @@ All notable changes to Underscore. Versions are pre-1.0 while the project
 stabilises; the patch number bumps with each meaningful change. Numbering starts
 from when the GUI work began (earlier CLI-only history is not versioned here).
 
+## 0.0.35
+- **Fix: window opens wide enough to show all controls.** The initial window size
+  was too narrow (580px), clipping the right edge of the settings panel — slider
+  value labels and buttons like "Default Sink" were cut off on first launch. The
+  window now opens at 820px, giving everything room to display without horizontal
+  scrolling.
+
 ## 0.0.34
 - **Fix: the settings scroll area no longer clips the right edge.** 0.0.33's scroll
   panel could collapse narrower than the controls needed, cutting off buttons and
