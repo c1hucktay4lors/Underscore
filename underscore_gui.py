@@ -136,7 +136,7 @@ class MainWindow(QMainWindow):
     # -- UI construction ------------------------------------------------------
     def _build_ui(self):
         content = QWidget()
-        content.setMaximumWidth(760)      # keep a sane width when maximized
+        content.setMaximumWidth(900)      # wide enough for all controls, still sane when maximized
         root = QVBoxLayout(content)
 
         # header: start/stop + state line
@@ -912,9 +912,9 @@ def main() -> int:
     app.setWindowIcon(app_icon())
     win = MainWindow()
     # Open wide enough that the settings panel's right edge (slider values, buttons)
-    # isn't clipped. The content is capped at 760px; add room for window chrome and
+    # isn't clipped. The content is capped at 900px; add room for window chrome and
     # margins so everything fits without horizontal scrolling on first launch.
-    win.resize(820, 760)
+    win.resize(960, 760)
     win.show()
     return app.exec()
 
